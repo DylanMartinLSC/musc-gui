@@ -1,0 +1,49 @@
+# MuSc Industrial GUI Configuration Example
+# Copy this file to config.yaml and modify as needed
+
+datasets:
+  class_name: ALL  # Category to test, or ALL for all categories
+  data_path: ./data/  # Path to your dataset (relative to project root)
+  dataset_name: mvtec_ad  # Dataset name (mvtec_ad, visa, btad)
+  divide_num: 1  # Number of subsets to divide test set into
+  img_resize: 224  # Image resize dimension (224, 256, 384, 512)
+
+device: 0  # GPU device index (0, 1, etc.) or 'cpu' for CPU-only mode
+
+models:
+  # Backbone model - choose from:
+  # CLIP models: ViT-B-32, ViT-B-16, ViT-L-14
+  # DINO models: dino_deitsmall16, dino_vitbase16, dino_vitbase8
+  # DINOv2 models: dinov2_vitb14, dinov2_vitl14
+  # Other: google/siglip-so400m-patch14-384, vit_small_patch32_224.augreg_in21k,
+  #        vit_tiny_patch16_224.augreg_in21k, vit_small_patch16_224.dino
+  backbone_name: dinov2_vitb14
+
+  batch_size: 1  # Batch size for inference
+
+  feature_layers:
+  - 11  # Layer indices to extract features from
+
+  pretrained: openai  # Pretrained model source (openai, laion400m_e31, laion400m_e32)
+
+  r_list:
+  - 1  # Aggregation degrees for LNAMD module
+
+testing:
+  output_dir: output_gui  # Directory for saving outputs
+  save_excel: false  # Whether to save results to Excel
+  vis: false  # Whether to save visualization images
+  vis_type: single_norm  # Visualization normalization type (single_norm or whole_norm)
+
+thresholds:
+  # Image threshold: 1.0-10.0 in GUI (divided by 10 internally to get 0.1-1.0)
+  # Higher = fewer false positives, may miss subtle anomalies
+  # Lower = more sensitive, more false positives
+  # Recommended: 8.0-9.5 for most applications
+  image_threshold: 9.0
+
+  # Overlay threshold: 1.0-10.0 in GUI (divided by 10 internally to get 0.1-1.0)
+  # Controls visualization overlay intensity
+  # Does not affect detection, only visualization
+  # Recommended: 3.0-5.0 for clear visualization
+  overlay_threshold: 3.5

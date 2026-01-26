@@ -1,0 +1,23 @@
+datasets:
+  class_name: ALL
+  data_path: ./data/  # Path to your dataset (relative to project root)
+  dataset_name: mvtec_ad
+  divide_num: 1
+  img_resize: 224
+device: 0
+models:
+  backbone_name: dinov2_vitb14
+  batch_size: 1
+  feature_layers:
+  - 11
+  pretrained: openai
+  r_list:
+  - 1
+testing:
+  output_dir: output_gui
+  save_excel: false
+  vis: false
+  vis_type: single_norm
+thresholds:
+  image_threshold: 9.0  # Displayed as 9.0 in GUI, used as 0.9 internally
+  overlay_threshold: 3.5  # Displayed as 3.5 in GUI, used as 0.35 internally

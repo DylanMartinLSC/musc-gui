@@ -76,13 +76,20 @@ class LNAMD(torch.nn.Module):
         for feature in features:
             # reshape and layer normalization
             feature = feature[:, 1:, :] # remove the cls token
-            feature = feature.reshape(feature.shape[0],
-                                      int(math.sqrt(feature.shape[1])),
-                                      int(math.sqrt(feature.shape[1])),
-                                      feature.shape[2])
+            num_tokens = feature.shape[1]
+            grid_size = int(math.ceil(math.sqrt(num_tokens)))
+            expected_tokens = grid_size * grid_size
+            if num_tokens < expected_tokens:
+                pad_amount = expected_tokens - num_tokens
+                pad_tensor = torch.zeros(feature.shape[0], pad_amount, feature.shape[2], device=feature.device)
+                feature = torch.cat([feature, pad_tensor], dim=1)
+            feature = feature.reshape(feature.shape[0], grid_size, grid_size, feature.shape[2])
+
             feature = feature.permute(0, 3, 1, 2)
-            feature = torch.nn.LayerNorm([feature.shape[1], feature.shape[2],
-                                          feature.shape[3]]).to(self.device)(feature)
+            feature = feature.to(torch.float32)  # Ensure input is in float32
+            norm_layer = torch.nn.LayerNorm([feature.shape[1], feature.shape[2], feature.shape[3]]).to(self.device)
+            feature = norm_layer(feature)
+
             features_layers.append(feature)
 
         if self.r != 1:

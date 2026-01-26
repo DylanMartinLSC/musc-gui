@@ -10,7 +10,11 @@ By default, our program uses the following function, which is slower but consume
 def compute_scores_fast(Z, i, device, topmin_min=0, topmin_max=0.3):
     # speed fast but space large
     # compute anomaly scores
+    if len(Z.shape) != 3:
+        raise ValueError(f"Expected Z to have 3 dimensions (batch, patches, features), but got {Z.shape}")
+
     image_num, patch_num, c = Z.shape
+
     patch2image = torch.tensor([]).to(device)
     Z_ref = torch.cat((Z[:i], Z[i+1:]), dim=0)
     patch2image = torch.cdist(Z[i:i+1], Z_ref.reshape(-1, c)).reshape(patch_num, image_num-1, patch_num)
@@ -55,7 +59,7 @@ def MSM(Z, device, topmin_min=0, topmin_max=0.3):
     for i in tqdm(range(Z.shape[0])):
     # for i in range(Z.shape[0]):
         anomaly_scores_i = compute_scores_fast(Z, i, device, topmin_min, topmin_max).unsqueeze(0)
-        anomaly_scores_matrix = torch.cat((anomaly_scores_matrix, anomaly_scores_i.double()), dim=0)    # (N, B)
+        anomaly_scores_matrix = torch.cat((anomaly_scores_matrix.to(device), anomaly_scores_i.to(device).double()), dim=0)
     return anomaly_scores_matrix
 
 if __name__ == "__main__":

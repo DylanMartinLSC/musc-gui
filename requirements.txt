@@ -1,7 +1,23 @@
-ftfy==6.1.3
-opencv-python==4.9.0.80
-openpyxl==3.1.2
-scikit-image==0.21.0
-scikit-learn==1.3.2
-timm==0.9.12
-tqdm==4.66.1
+# Install PyTorch + TorchVision from https://pytorch.org/get-started/locally/ if you need a specific CUDA build.
+# The constraints below declare the minimum versions required by MuSc and the Industrial GUI.
+torch>=2.0.1
+torchvision>=0.15.2
+numpy>=1.22
+pillow>=9.2
+pyyaml>=6.0
+tqdm>=4.65
+huggingface-hub>=0.20
+ftfy>=6.1
+regex>=2023.6.3
+open-clip-torch>=2.24
+timm>=0.9
+transformers>=4.36
+scikit-learn>=1.2
+scikit-image>=0.20
+pandas>=1.5
+openpyxl>=3.1
+PyQt5>=5.15
+opencv-python>=4.8
+# Optional acceleration extras
+# xformers>=0.0.23
+# horovod[pytorch]>=0.28

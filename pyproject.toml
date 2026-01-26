@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "musc-industrial-gui"
+version = "0.1.0"
+description = "Universal industrial anomaly detection GUI built on MuSc"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+authors = [
+  {name = "Dylan Martin"},
+  {name = "MuSc Authors", email = "xrli@hust.edu.cn"}
+]
+keywords = ["anomaly", "computer-vision", "manufacturing", "pytorch", "gui"]
+classifiers = [
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+dependencies = [
+  "torch>=2.0.1",
+  "torchvision>=0.15.2",
+  "numpy>=1.22",
+  "pillow>=9.2",
+  "pyyaml>=6.0",
+  "tqdm>=4.65",
+  "huggingface-hub>=0.20",
+  "ftfy>=6.1",
+  "regex>=2023.6.3",
+  "open-clip-torch>=2.24",
+  "timm>=0.9",
+  "transformers>=4.36",
+  "scikit-learn>=1.2",
+  "scikit-image>=0.20",
+  "pandas>=1.5",
+  "openpyxl>=3.1",
+  "PyQt5>=5.15",
+  "opencv-python>=4.8"
+]
+
+[project.optional-dependencies]
+accelerated = ["xformers>=0.0.23"]
+distributed = ["horovod[pytorch]>=0.28"]
+dev = [
+  "black>=23.3",
+  "ruff>=0.3",
+  "pytest>=7.4"
+]
+
+[project.scripts]
+musc-gui = "industrial_gui:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["models*", "datasets*", "utils*", "soft_memory*"]
+exclude = ["output_gui*", "assets*"]
+
+[tool.setuptools]
+py-modules = ["industrial_gui"]

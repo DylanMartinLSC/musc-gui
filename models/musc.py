@@ -65,15 +65,32 @@ class MuSc():
 
 
     def load_backbone(self):
-        if 'dino' in self.model_name:
-            # dino or dino_v2
+        # 1. Handle DINO and DINOv2 models
+        if self.model_name.startswith("dino_") or self.model_name.startswith("dinov2_"):
             self.dino_model = _backbones.load(self.model_name)
             self.dino_model.to(self.device)
             self.preprocess = None
+
+        # 2. Handle TIMM models (new branch for models starting with "vit_")
+        elif self.model_name.startswith("vit_"):
+            import timm
+            self.vision_model = timm.create_model(self.model_name, pretrained=True)
+            self.vision_model.to(self.device)
+            self.preprocess = None
+
+        # 3. The remainder of your branches (CLIP, etc.)...
         else:
-            # clip
-            self.clip_model, _, self.preprocess = open_clip.create_model_and_transforms(self.model_name, self.image_size, pretrained=self.pretrained)
+            # Your default / fallback code.
+            import models.backbone.open_clip as open_clip
+            self.clip_model, _, self.preprocess = open_clip.create_model_and_transforms(
+                self.model_name, self.image_size, pretrained=self.pretrained
+            )
             self.clip_model.to(self.device)
+            self.vision_model = self.clip_model
+
+
+
+
 
 
     def load_datasets(self, category, divide_num=1, divide_iter=0):
@@ -122,6 +139,171 @@ class MuSc():
                 anomaly_map *= 255
                 anomaly_map = cv2.applyColorMap(anomaly_map.astype(np.uint8), cv2.COLORMAP_JET)
                 cv2.imwrite(save_path, anomaly_map)
+
+
+    def infer_on_images(self, images):
+        print("Running real-time inference on webcam frames…")
+
+        # images comes in as a list; we want a single batch tensor [B,3,H,W]
+        batch = images[0] if isinstance(images[0], torch.Tensor) else torch.cat(images)
+        batch = batch.to(self.device)
+
+        patch_tokens_list = []
+        class_tokens = []
+
+        with torch.no_grad(), torch.cuda.amp.autocast():
+            # 1) DINO / DINOv2 branch
+            if hasattr(self, 'dino_model'):
+                patch_tokens_all = self.dino_model.get_intermediate_layers(batch, n=max(self.features_list))
+                image_features   = self.dino_model(batch)
+                patch_tokens     = [patch_tokens_all[l-1].cpu() for l in self.features_list]
+
+            # 2) HuggingFace CLIP branch (using processor)
+            elif hasattr(self, 'processor'):
+                # prepare BGR→RGB numpy frames
+                imgs = []
+                for t in batch:
+                    arr = (t.cpu().permute(1, 2, 0).numpy() * 255).astype('uint8')
+                    imgs.append(cv2.cvtColor(arr, cv2.COLOR_RGB2BGR))
+                inputs = self.processor(images=imgs, return_tensors="pt").to(self.device)
+                # get patch embeddings from hidden states
+                vision_out    = self.vision_model(inputs['pixel_values'], output_hidden_states=True)
+                hidden_states = vision_out.hidden_states  # tuple of [B, seq_len, C]
+                patch_tokens  = [hidden_states[l].cpu() for l in self.features_list]
+                # get global features using CLIP's get_image_features method
+                clip_out      = self.clip_model.get_image_features(**inputs)
+                image_features = clip_out / clip_out.norm(dim=-1, keepdim=True)
+
+            # 3) TIMM-based ViT branch (requires forward_features)
+            elif hasattr(self, 'vision_model') and hasattr(self.vision_model, 'forward_features'):
+                feats = self.vision_model.forward_features(batch)
+                # If the features are spatial (4D tensor), flatten to [B, tokens, C]
+                if feats.ndim == 4:
+                    B, C, H, W = feats.shape
+                    feats = feats.reshape(B, C, H * W).permute(0, 2, 1)
+                global_feats   = feats.mean(dim=1)
+                image_features = global_feats / global_feats.norm(dim=-1, keepdim=True)
+                patch_tokens   = [feats.cpu()]
+
+            # 4) (Optional) Additional branch if you use a separate vit_model
+            elif hasattr(self, 'vit_model'):
+                feats = self.vit_model.forward_features(batch)
+                if feats.ndim == 4:
+                    B, C, H, W = feats.shape
+                    feats = feats.reshape(B, C, H * W).permute(0, 2, 1)
+                global_feats   = feats.mean(dim=1)
+                image_features = global_feats / global_feats.norm(dim=-1, keepdim=True)
+                patch_tokens   = [feats.cpu()]
+
+            # 5) open_clip fallback branch
+            else:
+                image_features, patch_tokens_all = self.clip_model.encode_image(batch, self.features_list)
+                image_features /= image_features.norm(dim=-1, keepdim=True)
+                if not patch_tokens_all:
+                    raise ValueError("ERROR: patch_tokens is empty! The model did not extract any features.")
+                # Adjust if fewer layers than expected:
+                num_avail = len(patch_tokens_all)
+                if num_avail < len(self.features_list):
+                    self.features_list = self.features_list[:num_avail]
+                patch_tokens = [patch_tokens_all[l].cpu() for l in range(len(self.features_list))]
+
+        # Stash the global features for any classification or scoring
+        class_tokens.extend(
+            [image_features[i].squeeze().cpu().numpy() for i in range(image_features.shape[0])]
+        )
+        patch_tokens_list.append(patch_tokens)
+
+        # … then continue with your LNAMD + MSM pipeline as before …
+
+
+
+        # Run LNAMD and MSM operations
+        print("Processing features with LNAMD and MSM...")
+        feature_dim = patch_tokens_list[0][0].shape[-1]
+        anomaly_maps_r = torch.tensor([]).double()
+
+        for r in self.r_list:
+            LNAMD_r = LNAMD(device=self.device, r=r, feature_dim=feature_dim, feature_layer=self.features_list)
+            # Embed and normalize
+            features = LNAMD_r._embed([p.to(self.device) for p in patch_tokens_list[0]])
+            features /= features.norm(dim=-1, keepdim=True)
+
+            print(f"Shape of Z before MSM: {features.shape}")  # Debugging
+
+            # Ensure Z has exactly 3 dimensions: [batch_size, num_patches, feature_dim]
+            features = features.squeeze(2)  # remove extra dim if present
+            if features.ndim != 3:
+                raise ValueError(f"Invalid shape for Z: {features.shape}. Expected 3D tensor.")
+
+            anomaly_maps_msm = MSM(Z=features, device=self.device, topmin_min=0, topmin_max=0.3)
+            # (Repeat MSM if needed — your code calls MSM twice but that might be a duplicate)
+            anomaly_maps_msm = MSM(Z=features, device=self.device, topmin_min=0, topmin_max=0.3)
+            
+            anomaly_maps_r = torch.cat((anomaly_maps_r, anomaly_maps_msm.unsqueeze(0).cpu()), dim=0)
+
+        # Average across the r_list dimension
+        anomaly_maps = torch.mean(anomaly_maps_r, 0).cpu().numpy()
+        print("Anomaly detection complete. Visualizing results...")
+
+        # NOTE: At this point, anomaly_maps is typically [N, patch_count].
+        # We need to reshape it to [N, h, w] if patch_count = h*w.
+
+        pr_px = anomaly_maps
+        # Attempt to reshape if needed:
+        #   - If [N, patch_count], reshape to [N, side, side].
+        #   - If [N, 1, H, W], drop the channel dim.
+        #   - If it's already [N, H, W], do nothing.
+        if pr_px.ndim == 2:
+            # shape = [N, patch_count]
+            side_length = int(np.sqrt(pr_px.shape[1]))
+            pr_px = pr_px.reshape(pr_px.shape[0], side_length, side_length)
+        elif pr_px.ndim == 4 and pr_px.shape[1] == 1:
+            # shape = [N, 1, H, W]
+            pr_px = pr_px[:, 0, :, :]
+        elif pr_px.ndim not in [3]:
+            raise ValueError(f"Unexpected anomaly_maps shape: {pr_px.shape}")
+
+        # Now pr_px is [N, H, W]. Then we find the maximum score per image:
+        max_scores = pr_px.reshape(pr_px.shape[0], -1).max(axis=1)
+        anomaly_threshold = 0.99
+        high_anomaly_indices = np.where(max_scores > anomaly_threshold)[0]
+
+        if len(high_anomaly_indices) > 0:
+            for i in high_anomaly_indices:
+                # Extract single anomaly map: shape [H, W]
+                anomaly_map = pr_px[i]
+
+                # Normalize to [0, 255]
+                anomaly_map = (anomaly_map - anomaly_map.min()) / (anomaly_map.max() - anomaly_map.min() + 1e-8)
+                anomaly_map = (anomaly_map * 255).astype(np.uint8)
+
+                # Convert single-channel to color
+                anomaly_map = cv2.applyColorMap(anomaly_map, cv2.COLORMAP_JET)
+
+                # Reconstruct the original frame
+                # (images[i] is in [C,H,W], scale it back to 0..255 in BGR for cv2)
+                frame = batch[i].cpu().numpy().transpose(1, 2, 0) * 255
+                frame = frame.astype(np.uint8)
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+                # Resize anomaly_map if it doesn't match frame size
+                if anomaly_map.shape[:2] != frame.shape[:2]:
+                    anomaly_map = cv2.resize(anomaly_map, (frame.shape[1], frame.shape[0]))
+
+                # (Optional) Overlay the anomaly_map on top of the frame, etc.
+                # e.g. alpha-blend or just display it
+
+                cv2.waitKey(1)
+
+        # Optionally, simply clip the output without dividing by the batch maximum
+        pr_px = pr_px.astype(np.float32)
+        pr_px = np.clip(pr_px, 0.0, 1.0)
+
+
+
+        return pr_px
+
+
 
 
     def make_category_data(self, category):
@@ -225,6 +407,17 @@ class MuSc():
             anomaly_maps_iter = F.interpolate(anomaly_maps_iter.view(B, 1, H, H),
                                         size=self.image_size, mode='bilinear', align_corners=True)
             anomaly_maps = torch.cat((anomaly_maps, anomaly_maps_iter.cpu()), dim=0)
+            anomaly_maps = anomaly_maps.cpu().numpy()
+
+            # normalize so 1.0 is the top score
+            anomaly_maps = anomaly_maps.astype(np.float32)
+            global_max = anomaly_maps.max()
+            if global_max > 0:
+                anomaly_maps = anomaly_maps / global_max
+            anomaly_maps = np.clip(anomaly_maps, 0.0, 1.0)
+
+            B = anomaly_maps.shape[0]
+            ac_score = anomaly_maps.reshape(B, -1).max(-1)
 
         # save image features for optimizing classification
         # cls_save_path = os.path.join('./image_features/{}_{}.dat'.format(dataset, category))
