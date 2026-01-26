@@ -5,6 +5,8 @@ A powerful, zero-shot anomaly detection system for industrial and manufacturing 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
 ## What is This?
+<img width="1273" height="1140" alt="Screenshot 2026-01-26 062758" src="https://github.com/user-attachments/assets/a5f437b7-9e58-4b92-bbd9-fede40525369" />
+<img width="1275" height="1136" alt="Screenshot 2026-01-26 063009" src="https://github.com/user-attachments/assets/a8ebd6d7-8b84-4789-aac3-9104d8467fdd" />
 
 This is a graphical interface for **universal anomaly detection** in any industrial or manufacturing setting. Simply show the system what "normal" looks like, and it will automatically flag anything unusual - scratches, dents, missing components, color variations, alignment issues, and more.
 
