@@ -49,11 +49,16 @@ distributed = ["horovod[pytorch]>=0.28"]
 dev = [
   "black>=23.3",
   "ruff>=0.3",
-  "pytest>=7.4"
+  "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "mypy>=1.8",
+  "types-PyYAML>=6.0",
+  "pre-commit>=3.5"
 ]
 
 [project.scripts]
 musc-gui = "industrial_gui:main"
+musc-demo = "demo:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -61,4 +66,45 @@ include = ["models*", "datasets*", "utils*", "soft_memory*"]
 exclude = ["output_gui*", "assets*"]
 
 [tool.setuptools]
-py-modules = ["industrial_gui"]
+py-modules = ["industrial_gui", "demo"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests as requiring GPU",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py310", "py311"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+    | \.venv
+    | __pycache__
+    | output_gui
+    | soft_memory
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = ["E501", "B008", "B904"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true

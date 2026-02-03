@@ -283,10 +283,83 @@ GUI implementation and industrial application focus by Dylan Martin.
 - SSD storage
 - Industrial camera (recommended: GigE Vision or USB3 with global shutter)
 
+## FAQ
+
+### Why is the first run so slow?
+
+On first run, the system downloads pre-trained model weights (1-3GB depending on the model). This only happens once - subsequent runs will load from cache. Progress may not be visible in the GUI, so be patient for 1-2 minutes on first launch.
+
+### What GPU do I need?
+
+| Use Case | Minimum GPU | Recommended GPU |
+|----------|-------------|-----------------|
+| Testing/Development | Any CUDA GPU (4GB+ VRAM) | RTX 3060 (8GB) |
+| Production Line (real-time) | RTX 3060 | RTX 3080/4070 |
+| Batch Processing (100s of images) | RTX 3060 | RTX 3080+ |
+| CPU Only | N/A (works but slow) | N/A |
+
+### Can I run without a GPU?
+
+Yes, but it will be 10-50x slower. Set `device: 'cpu'` in config.yaml. Useful for testing or infrequent batch processing.
+
+### How do I use the CLI demo?
+
+```bash
+# Single image
+python demo.py --input sample.png
+
+# Directory of images
+python demo.py --input images/ --output results/
+
+# Specific model and threshold
+python demo.py --input sample.png --backbone dinov2_vitl14 --threshold 8.0
+```
+
+### Which model should I use?
+
+- **Default** (`dinov2_vitb14`): Best balance of speed and accuracy
+- **Fast** (`vit_tiny_patch16_224.augreg_in21k`): 3-5x faster, slightly less accurate
+- **Accurate** (`dinov2_vitl14`): Best accuracy, requires more GPU memory
+
+### How much reference data do I need?
+
+- **Minimum**: 5 images of "normal" products
+- **Recommended**: 10-50 images covering normal variations
+- **Maximum**: 100 images (more slows inference without much benefit)
+
+### Why am I getting false positives?
+
+1. **Increase threshold** (try 9.5 or 10.0 in config)
+2. **Add more reference images** showing normal variations
+3. **Ensure consistent lighting** and positioning
+4. **Clean your soft memory** of bad reference images
+
+### Why am I missing real defects?
+
+1. **Lower threshold** (try 7.0 or 8.0)
+2. **Use a larger model** (dinov2_vitl14 instead of vitb14)
+3. **Increase image resolution** (384 or 512 instead of 224)
+4. **Check reference images** - ensure they truly represent "normal"
+
+### How do I export results?
+
+- **GUI**: Click "Save" on individual anomalies in the sidebar
+- **CLI**: Results are automatically saved to `--output` directory
+- **Programmatic**: Use the MuSc class directly (see examples/anomaly_detection.ipynb)
+
+### Does this work offline?
+
+Yes, after the initial model download. All inference runs locally without internet access.
+
+### Can I fine-tune the model?
+
+No - MuSc is specifically designed for **zero-shot** detection without training. This is its key advantage: no labeled defect data required. For fine-tuning needs, consider other approaches like PatchCore or DRAEM.
+
 ## Support & Contributing
 
 - **Issues**: Report bugs or request features via GitHub Issues
 - **Documentation**: See `README_GUI.md` for detailed GUI documentation
+- **Contributing**: See `CONTRIBUTING.md` for development guidelines
 - **Original Research**: See the [original MuSc repository](https://github.com/xrli-U/MuSc) for research code
 
 ## Acknowledgments

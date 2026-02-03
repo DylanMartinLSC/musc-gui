@@ -1,0 +1,1 @@
+# MuSc Industrial GUI Tests

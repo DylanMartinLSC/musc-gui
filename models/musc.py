@@ -1,38 +1,97 @@
+"""
+MuSc: Zero-Shot Industrial Anomaly Classification and Segmentation.
+
+This module implements the MuSc (Mutual Scoring) algorithm for zero-shot
+anomaly detection, as described in the ICLR 2024 paper:
+
+    "MuSc: Zero-Shot Industrial Anomaly Classification and Segmentation
+     with Mutual Scoring of the Unlabeled Images"
+
+The algorithm combines:
+- LNAMD: Local Neighborhood Aggregation with Multi-scale Distance
+- MSM: Mutual Scoring Module for comparing images without labels
+- RsCIN: Reference-based Score Calibration for Image-level Normalization
+"""
+
+from __future__ import annotations
+
 import os
 import sys
+import time
+import warnings
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+from numpy.typing import NDArray
+from openpyxl import Workbook
+from tqdm import tqdm
+
 sys.path.append('./models/backbone')
 
-import datasets.mvtec as mvtec
-from datasets.mvtec import _CLASSNAMES as _CLASSNAMES_mvtec_ad
-import datasets.visa as visa
-from datasets.visa import _CLASSNAMES as _CLASSNAMES_visa
 import datasets.btad as btad
-from datasets.btad import _CLASSNAMES as _CLASSNAMES_btad
-
-import models.backbone.open_clip as open_clip
+import datasets.mvtec as mvtec
+import datasets.visa as visa
 import models.backbone._backbones as _backbones
+import models.backbone.open_clip as open_clip
+from datasets.btad import _CLASSNAMES as _CLASSNAMES_btad
+from datasets.mvtec import _CLASSNAMES as _CLASSNAMES_mvtec_ad
+from datasets.visa import _CLASSNAMES as _CLASSNAMES_visa
 from models.modules._LNAMD import LNAMD
 from models.modules._MSM import MSM
 from models.modules._RsCIN import RsCIN
 from utils.metrics import compute_metrics
-from openpyxl import Workbook
-from tqdm import tqdm
-import pickle
-import time
-import cv2
 
-import warnings
 warnings.filterwarnings("ignore")
 
+# Type aliases
+ConfigDict = Dict[str, Any]
+ImageMetrics = Tuple[float, float, float]  # (AUROC, F1, AP)
+PixelMetrics = Tuple[float, float, float, float]  # (AUROC, F1, AP, AuPRO)
 
-class MuSc():
-    def __init__(self, cfg, seed=0):
+
+class MuSc:
+    """
+    Zero-shot anomaly detection using mutual scoring of unlabeled images.
+
+    This class provides the main interface for running MuSc anomaly detection.
+    It supports multiple vision transformer backbones (DINO, DINOv2, CLIP, TIMM)
+    and can process images in real-time or batch mode.
+
+    Attributes:
+        cfg: Configuration dictionary containing model and dataset settings.
+        device: PyTorch device (cuda or cpu) for computation.
+        model_name: Name of the backbone vision model.
+        image_size: Input image resolution (e.g., 224, 384, 512).
+
+    Example:
+        >>> cfg = load_config("config.yaml")
+        >>> model = MuSc(cfg)
+        >>> # Real-time inference
+        >>> anomaly_maps = model.infer_on_images([image_tensor])
+        >>> # Batch evaluation on dataset
+        >>> model.main()
+    """
+
+    def __init__(self, cfg: ConfigDict, seed: int = 0) -> None:
+        """
+        Initialize the MuSc model.
+
+        Args:
+            cfg: Configuration dictionary with the following structure:
+                - datasets: img_resize, dataset_name, class_name, data_path, divide_num
+                - models: backbone_name, batch_size, feature_layers, pretrained, r_list
+                - testing: output_dir, vis, vis_type, save_excel
+                - device: GPU index (int) or 'cpu'
+            seed: Random seed for reproducibility.
+        """
         self.cfg = cfg
         self.seed = seed
-        self.device = torch.device("cuda:{}".format(cfg['device']) if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(
+            "cuda:{}".format(cfg['device']) if torch.cuda.is_available() else "cpu"
+        )
 
         self.path = cfg['datasets']['data_path']
         self.dataset = cfg['datasets']['dataset_name']
@@ -63,8 +122,23 @@ class MuSc():
         os.makedirs(self.output_dir, exist_ok=True)
         self.load_backbone()
 
+    def load_backbone(self) -> None:
+        """
+        Load the vision transformer backbone model.
 
-    def load_backbone(self):
+        Supports three types of backbones:
+        - DINO/DINOv2: Self-supervised vision transformers from Meta
+        - TIMM: Models from the timm library (e.g., vit_small_patch16_224)
+        - CLIP/OpenCLIP: Contrastive language-image models
+
+        The backbone is automatically selected based on the model_name prefix:
+        - "dino_" or "dinov2_" → DINO/DINOv2
+        - "vit_" → TIMM
+        - Other → OpenCLIP
+
+        Raises:
+            RuntimeError: If the model cannot be loaded.
+        """
         # 1. Handle DINO and DINOv2 models
         if self.model_name.startswith("dino_") or self.model_name.startswith("dinov2_"):
             self.dino_model = _backbones.load(self.model_name)
@@ -90,10 +164,26 @@ class MuSc():
 
 
 
+    def load_datasets(
+        self,
+        category: str,
+        divide_num: int = 1,
+        divide_iter: int = 0,
+    ) -> Any:
+        """
+        Load a test dataset for the specified category.
 
+        Args:
+            category: Product category name (e.g., 'bottle', 'screw').
+            divide_num: Number of subdivisions for large datasets.
+            divide_iter: Current subdivision index.
 
+        Returns:
+            Dataset object (MVTecDataset, VisaDataset, or BTADDataset).
 
-    def load_datasets(self, category, divide_num=1, divide_iter=0):
+        Raises:
+            ValueError: If dataset_name is not recognized.
+        """
         # dataloader
         if self.dataset == 'visa':
             test_dataset = visa.VisaDataset(source=self.path, split=visa.DatasetSplit.TEST,
@@ -109,9 +199,24 @@ class MuSc():
                                                 divide_num=divide_num, divide_iter=divide_iter, random_seed=self.seed)
         return test_dataset
 
+    def visualization(
+        self,
+        image_path_list: List[str],
+        gt_list: List[int],
+        pr_px: NDArray[np.floating],
+        category: str,
+    ) -> None:
+        """
+        Save anomaly heatmap visualizations to disk.
 
-    def visualization(self, image_path_list, gt_list, pr_px, category):
-        def normalization01(img):
+        Args:
+            image_path_list: List of source image file paths.
+            gt_list: Ground truth labels (0=normal, 1=anomaly).
+            pr_px: Predicted pixel-level anomaly maps [N, H, W].
+            category: Category name for output subdirectory.
+        """
+
+        def normalization01(img: NDArray) -> NDArray:
             return (img - img.min()) / (img.max() - img.min())
         if self.vis_type == 'single_norm':
             # normalized per image
@@ -140,8 +245,33 @@ class MuSc():
                 anomaly_map = cv2.applyColorMap(anomaly_map.astype(np.uint8), cv2.COLORMAP_JET)
                 cv2.imwrite(save_path, anomaly_map)
 
+    def infer_on_images(
+        self,
+        images: List[torch.Tensor],
+    ) -> NDArray[np.floating]:
+        """
+        Run anomaly detection inference on a batch of images.
 
-    def infer_on_images(self, images):
+        This is the main inference method for real-time and CLI usage.
+        It processes images through the backbone, LNAMD, and MSM pipeline
+        to produce pixel-level anomaly maps.
+
+        Args:
+            images: List of image tensors, each with shape [B, 3, H, W].
+                   Typically a single tensor with batch dimension.
+
+        Returns:
+            Anomaly maps as numpy array with shape [N, H, W], where:
+            - N is the number of images
+            - H, W are the spatial dimensions (patch grid size)
+            - Values are normalized to [0, 1] range
+
+        Example:
+            >>> tensor = torch.rand(1, 3, 224, 224).to(model.device)
+            >>> anomaly_maps = model.infer_on_images([tensor])
+            >>> max_score = anomaly_maps.max()
+            >>> is_anomaly = max_score > 0.9
+        """
         print("Running real-time inference on webcam frames…")
 
         # images comes in as a list; we want a single batch tensor [B,3,H,W]
@@ -303,10 +433,26 @@ class MuSc():
 
         return pr_px
 
+    def make_category_data(self, category: str) -> Tuple[ImageMetrics, PixelMetrics]:
+        """
+        Process all test images for a single category and compute metrics.
 
+        This method runs the full MuSc pipeline on a dataset category:
+        1. Load test dataset
+        2. Extract features using the backbone
+        3. Apply LNAMD for feature aggregation
+        4. Apply MSM for mutual scoring
+        5. Apply RsCIN for image-level score calibration
+        6. Compute evaluation metrics
 
+        Args:
+            category: Product category name (e.g., 'bottle', 'screw').
 
-    def make_category_data(self, category):
+        Returns:
+            Tuple of (image_metrics, pixel_metrics) where:
+            - image_metrics: (AUROC, F1, AP) for image-level classification
+            - pixel_metrics: (AUROC, F1, AP, AuPRO) for pixel-level segmentation
+        """
         print(category)
 
         # divide sub-datasets
@@ -458,9 +604,19 @@ class MuSc():
     
         return image_metric, pixel_metric
 
+    def main(self) -> None:
+        """
+        Run full benchmark evaluation on all configured categories.
 
-    def main(self):
-        auroc_sp_ls = []
+        Processes each category in self.categories, computes metrics,
+        prints results, and optionally saves to Excel file.
+
+        Results include:
+        - Per-category image-level metrics (AUROC, F1, AP)
+        - Per-category pixel-level metrics (AUROC, F1, AP, AuPRO)
+        - Mean metrics across all categories
+        """
+        auroc_sp_ls: List[float] = []
         f1_sp_ls = []
         ap_sp_ls = []
         auroc_px_ls = []

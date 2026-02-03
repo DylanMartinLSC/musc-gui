@@ -1,0 +1,46 @@
+# Pre-commit hooks for MuSc Industrial GUI
+# Install: pip install pre-commit && pre-commit install
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: debug-statements
+
+  - repo: https://github.com/psf/black
+    rev: 24.1.1
+    hooks:
+      - id: black
+        language_version: python3
+        args: ['--line-length=100']
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.2.0
+    hooks:
+      - id: ruff
+        args: ['--fix']
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - types-PyYAML
+        args: ['--ignore-missing-imports']
+        # Only check core files, not all dependencies
+        files: ^(models/musc\.py|demo\.py|industrial_gui\.py)$
+
+# Exclude generated/vendor files
+exclude: |
+  (?x)^(
+    models/backbone/open_clip/.*|
+    models/backbone/dinov2/.*|
+    output_gui/.*|
+    soft_memory/.*
+  )$

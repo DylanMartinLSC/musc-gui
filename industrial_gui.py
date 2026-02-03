@@ -646,6 +646,45 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.live_frame_counter = 0
         self.live_frame_interval = 1  # Will be computed when starting recording
 
+        # Load existing soft memory images from disk
+        self._load_soft_memory_from_disk()
+
+    def _load_soft_memory_from_disk(self):
+        """Load existing images from soft_memory/ directory on startup."""
+        soft_memory_dir = os.path.join(os.getcwd(), "soft_memory")
+        if not os.path.exists(soft_memory_dir):
+            return
+
+        # Supported image extensions
+        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
+        loaded_count = 0
+
+        # Get all image files sorted by modification time (oldest first for consistent ordering)
+        image_files = []
+        for filename in os.listdir(soft_memory_dir):
+            ext = os.path.splitext(filename)[1].lower()
+            if ext in image_extensions:
+                filepath = os.path.join(soft_memory_dir, filename)
+                if os.path.isfile(filepath):
+                    image_files.append((filepath, os.path.getmtime(filepath)))
+
+        # Sort by modification time
+        image_files.sort(key=lambda x: x[1])
+
+        for filepath, _ in image_files:
+            try:
+                frame = cv2.imread(filepath)
+                if frame is not None:
+                    self.soft_memory_frames.append(frame)
+                    loaded_count += 1
+            except Exception as e:
+                print(f"Warning: Could not load soft memory image {filepath}: {e}")
+
+        if loaded_count > 0:
+            print(f"Loaded {loaded_count} images from soft_memory/ directory")
+            # Refresh the sidebar to display loaded images
+            self.refresh_soft_memory_sidebar()
+
     # ------------------------------
     # Unified Sidebar Setup
     # ------------------------------
@@ -663,7 +702,8 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.anomaly_save_btn        = QPushButton("Save Selected");  self.anomaly_save_btn.clicked.connect(self.save_selected_anomaly_images)
         self.anomaly_delete_btn      = QPushButton("Delete Selected");self.anomaly_delete_btn.clicked.connect(self.delete_selected_anomaly_images)
         self.anomaly_select_all_btn  = QPushButton("Select/Deselect All"); self.anomaly_select_all_btn.clicked.connect(self.toggle_select_all_anomaly)
-        for b in (self.anomaly_save_to_soft_btn, self.anomaly_save_btn, self.anomaly_delete_btn, self.anomaly_select_all_btn):
+        self.anomaly_export_btn = QPushButton("Export Results"); self.anomaly_export_btn.clicked.connect(self.export_anomaly_results)
+        for b in (self.anomaly_save_to_soft_btn, self.anomaly_save_btn, self.anomaly_delete_btn, self.anomaly_select_all_btn, self.anomaly_export_btn):
             an_btn_layout.addWidget(b)
         an_layout.addLayout(an_btn_layout)
         # master Display Mask checkbox ------------------------------------
@@ -866,13 +906,92 @@ class MainWindow(QMainWindow, SidebarMixin):
 
     @pyqtSlot()
     def toggle_load_more_anomalies(self):
-        """Flip between ‘last-10’ and ‘all, grouped by minute’ views."""
+        """Flip between 'last-10' and 'all, grouped by minute' views."""
         self.anomaly_show_all = not self.anomaly_show_all
         self.anomaly_load_more_btn.setText(
             "Show Recent" if self.anomaly_show_all else "Load More"
         )
         self.refresh_anomaly_sidebar()      # rebuild with the new rule
 
+    @pyqtSlot()
+    def export_anomaly_results(self):
+        """Export anomaly detection results to JSON or CSV."""
+        import json
+        import csv
+
+        # Let user choose format and location
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Anomaly Results",
+            f"anomaly_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "JSON Files (*.json);;CSV Files (*.csv);;All Files (*)"
+        )
+        if not filepath:
+            return
+
+        # Collect all anomaly data
+        results = []
+        for day_key, day_data in self.anomalies_by_day.items():
+            for hour_key, hour_data in day_data.items():
+                for pix, overlay_bgr, raw, ts, score in hour_data:
+                    results.append({
+                        "timestamp": ts.isoformat(),
+                        "date": ts.strftime("%Y-%m-%d"),
+                        "time": ts.strftime("%H:%M:%S"),
+                        "score": float(score),
+                        "is_anomaly": True,
+                    })
+
+        # Sort by timestamp (newest first)
+        results.sort(key=lambda x: x["timestamp"], reverse=True)
+
+        # Add summary statistics
+        summary = {
+            "total_anomalies": len(results),
+            "export_time": datetime.now().isoformat(),
+            "model_backbone": self.config_data.get("models", {}).get("backbone_name", "unknown"),
+            "image_threshold": self.config_data.get("thresholds", {}).get("image_threshold", "unknown"),
+        }
+
+        # Export based on file extension
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext == ".csv":
+            self._export_to_csv(filepath, results, summary)
+        else:
+            # Default to JSON
+            if not filepath.endswith(".json"):
+                filepath += ".json"
+            self._export_to_json(filepath, results, summary)
+
+        print(f"Exported {len(results)} anomaly results to {filepath}")
+
+    def _export_to_json(self, filepath, results, summary):
+        """Export results to JSON format."""
+        import json
+        export_data = {
+            "summary": summary,
+            "anomalies": results,
+        }
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(export_data, f, indent=2, ensure_ascii=False)
+
+    def _export_to_csv(self, filepath, results, summary):
+        """Export results to CSV format."""
+        import csv
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
+            # Write summary as comments
+            f.write(f"# MuSc Anomaly Detection Results\n")
+            f.write(f"# Exported: {summary['export_time']}\n")
+            f.write(f"# Model: {summary['model_backbone']}\n")
+            f.write(f"# Threshold: {summary['image_threshold']}\n")
+            f.write(f"# Total Anomalies: {summary['total_anomalies']}\n")
+            f.write("#\n")
+
+            # Write data
+            if results:
+                writer = csv.DictWriter(f, fieldnames=results[0].keys())
+                writer.writeheader()
+                writer.writerows(results)
 
     @pyqtSlot()
     def delete_selected_anomaly_images(self):
