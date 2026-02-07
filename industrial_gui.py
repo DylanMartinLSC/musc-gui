@@ -39,7 +39,9 @@ from PyQt5.QtWidgets import (
     QStyle,
     QGroupBox,
     QProgressBar,
-    QDockWidget
+    QDockWidget,
+    QLineEdit,
+    QMessageBox
 )
 from PyQt5.QtGui import (
     QPixmap,
@@ -174,7 +176,7 @@ class ConfigDialog(QDialog):
             "vit_small_patch16_224.dino",
         ])
 
-        current_backbone = config_data["models"].get("backbone_name", "dinov2_vitb14")
+        current_backbone = config_data["models"].get("backbone_name", "dino_deitsmall16")
         self.modelCombo.setCurrentText(current_backbone)
         layout.addRow("Backbone Name:", self.modelCombo)
 
@@ -631,7 +633,8 @@ class MainWindow(QMainWindow, SidebarMixin):
 
         # Live camera variables.
         self.anomaly_scores_history = deque(maxlen=10)
-        self.cap = cv2.VideoCapture(0)
+        self.cap = None  # Will be initialized when connecting to camera
+        self.camera_source = None  # Store the current camera source (0 for USB or URL for IP)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(30)
@@ -645,6 +648,9 @@ class MainWindow(QMainWindow, SidebarMixin):
         # For live FPS selection
         self.live_frame_counter = 0
         self.live_frame_interval = 1  # Will be computed when starting recording
+
+        # Initialize with USB camera by default
+        self.connect_to_camera(0)
 
     # ------------------------------
     # Unified Sidebar Setup
@@ -907,6 +913,47 @@ class MainWindow(QMainWindow, SidebarMixin):
     # ------------------------------
     def setup_live_tab(self):
         layout = QVBoxLayout(self.live_tab)
+
+        # Camera source selection group
+        camera_group = QGroupBox("Camera Source")
+        camera_layout = QVBoxLayout()
+
+        # USB Camera option
+        usb_layout = QHBoxLayout()
+        usb_label = QLabel("USB Camera (Device Index):")
+        self.usb_device_spin = QSpinBox()
+        self.usb_device_spin.setRange(0, 10)
+        self.usb_device_spin.setValue(0)
+        self.usb_connect_btn = QPushButton("Connect USB Camera")
+        self.usb_connect_btn.clicked.connect(self.connect_usb_camera)
+        usb_layout.addWidget(usb_label)
+        usb_layout.addWidget(self.usb_device_spin)
+        usb_layout.addWidget(self.usb_connect_btn)
+        usb_layout.addStretch()
+        camera_layout.addLayout(usb_layout)
+
+        # IP Camera option
+        ip_layout = QHBoxLayout()
+        ip_label = QLabel("IP Camera URL:")
+        self.ip_camera_input = QLineEdit()
+        self.ip_camera_input.setPlaceholderText("rtsp://username:password@ip:port/path or http://ip:port/video")
+        self.ip_camera_input.setMinimumWidth(400)
+        self.ip_connect_btn = QPushButton("Connect IP Camera")
+        self.ip_connect_btn.clicked.connect(self.connect_ip_camera)
+        ip_layout.addWidget(ip_label)
+        ip_layout.addWidget(self.ip_camera_input)
+        ip_layout.addWidget(self.ip_connect_btn)
+        camera_layout.addLayout(ip_layout)
+
+        # Current connection status
+        self.connection_status_label = QLabel("Status: Not Connected")
+        self.connection_status_label.setStyleSheet("color: orange; font-weight: bold;")
+        camera_layout.addWidget(self.connection_status_label)
+
+        camera_group.setLayout(camera_layout)
+        layout.addWidget(camera_group)
+
+        # Warning label and video display
         top_layout = QHBoxLayout()
         layout.addLayout(top_layout)
         self.warning_label = QLabel("❗")
@@ -1386,6 +1433,9 @@ class MainWindow(QMainWindow, SidebarMixin):
     # Additional methods for live camera mode.
     # ------------------------------
     def capture_still(self):
+        if self.cap is None:
+            QMessageBox.warning(self, "Camera Error", "No camera connected. Please connect to a camera first.")
+            return
         if self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
@@ -1414,8 +1464,11 @@ class MainWindow(QMainWindow, SidebarMixin):
                 print("Error re-initializing model:", e)
 
     def startRecording(self):
+        if self.cap is None:
+            QMessageBox.warning(self, "Camera Error", "No camera connected. Please connect to a camera first.")
+            return
         if not self.cap.isOpened():
-            print("Camera not opened.")
+            QMessageBox.warning(self, "Camera Error", "Camera is not opened. Please reconnect to your camera.")
             return
         if self.model is None:
             print("No model loaded; cannot start inference.")
@@ -1442,8 +1495,70 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.inference_in_progress = False
         print("Recording / inference stopped.")
 
+    def connect_to_camera(self, source):
+        """Connect to a camera source (USB device index or IP camera URL)."""
+        # Release existing camera if any
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+
+        try:
+            self.cap = cv2.VideoCapture(source)
+            # Give the camera a moment to initialize
+            pytime.sleep(0.5)
+
+            # Test if the camera is actually opened
+            if self.cap.isOpened():
+                ret, test_frame = self.cap.read()
+                if ret:
+                    self.camera_source = source
+                    if isinstance(source, int):
+                        self.connection_status_label.setText(f"Status: Connected to USB Camera (Device {source})")
+                        self.connection_status_label.setStyleSheet("color: green; font-weight: bold;")
+                    else:
+                        self.connection_status_label.setText(f"Status: Connected to IP Camera")
+                        self.connection_status_label.setStyleSheet("color: green; font-weight: bold;")
+                    print(f"Successfully connected to camera: {source}")
+                    return True
+                else:
+                    raise Exception("Could not read frame from camera")
+            else:
+                raise Exception("Failed to open camera")
+        except Exception as e:
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            self.camera_source = None
+            self.connection_status_label.setText(f"Status: Connection Failed")
+            self.connection_status_label.setStyleSheet("color: red; font-weight: bold;")
+            QMessageBox.warning(self, "Camera Connection Error",
+                              f"Failed to connect to camera:\n{str(e)}\n\nPlease check your camera source and try again.")
+            print(f"Failed to connect to camera {source}: {e}")
+            return False
+
+    def connect_usb_camera(self):
+        """Connect to a USB camera using the selected device index."""
+        device_index = self.usb_device_spin.value()
+        self.connect_to_camera(device_index)
+
+    def connect_ip_camera(self):
+        """Connect to an IP camera using the provided URL."""
+        ip_url = self.ip_camera_input.text().strip()
+        if not ip_url:
+            QMessageBox.warning(self, "Input Error", "Please enter an IP camera URL.")
+            return
+
+        # Validate URL format (basic check)
+        if not (ip_url.startswith('rtsp://') or ip_url.startswith('http://') or
+                ip_url.startswith('https://') or ip_url.startswith('tcp://')):
+            QMessageBox.warning(self, "Input Error",
+                              "Invalid URL format. URL should start with rtsp://, http://, https://, or tcp://")
+            return
+
+        self.connect_to_camera(ip_url)
+
     def update_frame(self):
-        if not self.cap.isOpened():
+        if self.cap is None or not self.cap.isOpened():
             return
         ret, frame = self.cap.read()
         if not ret:
@@ -1556,34 +1671,30 @@ class MainWindow(QMainWindow, SidebarMixin):
         if not self.continuous_checkbox.isChecked():
             self.recording = False
 
+    def closeEvent(self, event):
+        """Clean up resources when closing the window."""
+        # Stop timers
+        if hasattr(self, 'timer'):
+            self.timer.stop()
+        if hasattr(self, 'video_timer'):
+            self.video_timer.stop()
+
+        # Release cameras
+        if hasattr(self, 'cap') and self.cap is not None:
+            self.cap.release()
+        if hasattr(self, 'video_cap') and self.video_cap is not None:
+            self.video_cap.release()
+        if hasattr(self, 'video_preview_cap') and self.video_preview_cap is not None:
+            self.video_preview_cap.release()
+
+        event.accept()
+
 def main():
     app = QApplication(sys.argv)
     font = QFont()
     font.setPointSize(16)
     app.setFont(font)
-
-    # Look for config file in standard locations
-    config_locations = [
-        "config.yaml",  # Current directory
-        os.path.join("configs", "musc.yaml"),  # configs subdirectory
-        os.path.join(os.path.dirname(__file__), "config.yaml"),  # Script directory
-        os.path.join(os.path.dirname(__file__), "configs", "musc.yaml"),  # Script configs subdirectory
-    ]
-
-    yaml_path = None
-    for loc in config_locations:
-        if os.path.exists(loc):
-            yaml_path = loc
-            break
-
-    if yaml_path is None:
-        print("Error: Could not find config.yaml file. Please create one in the current directory or configs/ subdirectory.")
-        print("Searched locations:")
-        for loc in config_locations:
-            print(f"  - {os.path.abspath(loc)}")
-        sys.exit(1)
-
-    print(f"Using configuration file: {yaml_path}")
+    yaml_path = os.path.join(os.getcwd(), r"C:\Users\dylan\MuSc_original\MuSc\configs\musc.yaml")
     win = MainWindow(yaml_path)
     win.show()
     sys.exit(app.exec_())
