@@ -1,33 +1,61 @@
 datasets:
-  dataset_name: 'mvtec_ad'  # choice ['mvtec_ad', 'visa', 'btad']
+  dataset_name: 'mvtec_ad'  # Dataset type (for testing/training only)
   data_path: ./data/
   class_name: 'ALL'
-  img_resize: 224
+  img_resize: 224  # Image size: 224 (fast), 384/512 (slower but more accurate)
   divide_num: 1
+
 models:
-  backbone_name: 'dinov2_vitb14'
+  backbone_name: 'dinov2_vitb14'  # AI Model - see options below
   pretrained: 'openai'
   batch_size: 1
-  feature_layers: [11]
+  feature_layers: [11]  # Internal settings - do not modify
   r_list: [1]
+
 testing:
-  output_dir: 'output_gui'
+  output_dir: 'output_gui'  # Where to save results
   vis: False
-  vis_type: single_norm # choice ['single_norm', 'whole_norm']
+  vis_type: single_norm
   save_excel: False
+
+# Detection Thresholds (configured in GUI as 0-100%)
 thresholds:
-  image_threshold: 9.0  # 1.0-10.0 in GUI (divided by 10 internally)
-  overlay_threshold: 3.5  # 1.0-10.0 in GUI (divided by 10 internally)
+  image_threshold: 9.0  # Detection Sensitivity: 90% (High=strict, Low=sensitive)
+  overlay_threshold: 3.5  # Heatmap Intensity: 35% (how much defect area to highlight)
+
+# GPU Device: 0 (first GPU), 1 (second GPU), etc. Uses CPU if no GPU available
 device: 0
 
 
-# models['backbone_name'] choice:
+# ============================================================================
+# AI MODEL SELECTION GUIDE
+# ============================================================================
+#
+# RECOMMENDED MODELS:
+# -------------------
+# dinov2_vitb14          - Best balance of speed and accuracy (RECOMMENDED)
+#                          Download: 350MB, Speed: 15-20 FPS on RTX 3060
+#
+# FAST MODELS (for older GPUs or testing):
+# -----------------------------------------
+# dino_deitsmall16       - Fast, good for older GPUs
+#                          Download: 160MB, Speed: 20-30 FPS
+# vit_tiny_patch16_224.augreg_in21k - Fastest (for testing or CPU mode)
+#                          Download: 40MB, Speed: 30+ FPS on older GPUs
+#
+# HIGH ACCURACY MODELS (requires powerful GPU):
+# ----------------------------------------------
+# dinov2_vitl14          - Highest accuracy but slower
+#                          Download: 1.1GB, Speed: 8-12 FPS on RTX 3060
+# google/siglip-so400m-patch14-384 - Fine details, very slow
+#                          Download: 1.5GB, Speed: 5-8 FPS
+#
+# OTHER OPTIONS:
+# --------------
 # ViT-B-32 | ViT-B-16 | ViT-B-16-plus-240
 # ViT-L-14 | ViT-L-14-336
 # dino_vitbase8 | dino_vitbase16
-# dinov2_vitb14 | dinov2_vitl14
-
-# models['pretrained'] choice:
-# openai (apply to ViT-B-32, ViT-B-16, ViT-L-14 and ViT-L-14-336)
-# laion400m_e31 (apply to ViT-B-32, ViT-B-16, ViT-B-16-plus-240 and ViT-L-14)
-# laion400m_e32 (apply to ViT-B-32, ViT-B-16, ViT-B-16-plus-240 and ViT-L-14)
+# vit_small_patch16_224.dino
+#
+# models['pretrained'] (advanced users only):
+# openai, laion400m_e31, laion400m_e32

@@ -41,7 +41,8 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QDockWidget,
     QLineEdit,
-    QMessageBox
+    QMessageBox,
+    QStatusBar
 )
 from PyQt5.QtGui import (
     QPixmap,
@@ -157,94 +158,389 @@ class ConfigDialog(QDialog):
     def __init__(self, config_data, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configuration")
+        self.setMinimumWidth(700)
         self.config_data = config_data
         if "thresholds" not in self.config_data:
             self.config_data["thresholds"] = {}
         thresholds = self.config_data["thresholds"]
-        layout = QFormLayout()
 
-        # Model selection
+        # Import utilities
+        from utils import (
+            get_gpu_info, get_recommended_device, get_models_by_category,
+            get_model_info, format_model_details, get_category_display_name
+        )
+
+        main_layout = QVBoxLayout()
+        form_layout = QFormLayout()
+
+        # ===== Configuration Presets Section =====
+        preset_group = QGroupBox("⚡ Quick Setup (Choose a Preset)")
+        preset_layout = QVBoxLayout()
+
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItem("🔧 Custom Configuration (Manual)", None)
+        self.preset_combo.addItem("🧪 Testing & Demo (Fast, works on CPU)", "testing")
+        self.preset_combo.addItem("⚖️ Production Line (Balanced) - RECOMMENDED", "production")
+        self.preset_combo.addItem("🎯 High Precision Inspection (Slow, accurate)", "precision")
+        self.preset_combo.addItem("🖥️ CPU Mode (No GPU available)", "cpu")
+        self.preset_combo.setToolTip(
+            "Quick Setup Presets:\n"
+            "• Testing & Demo: Fast model, good for trying out the system\n"
+            "• Production Line: Balanced speed and accuracy (RECOMMENDED)\n"
+            "• High Precision: Maximum accuracy for critical inspection\n"
+            "• CPU Mode: For computers without GPU (very slow)\n"
+            "• Custom: Manually configure all settings"
+        )
+        self.preset_combo.currentIndexChanged.connect(self.apply_preset)
+        preset_layout.addWidget(self.preset_combo)
+
+        preset_desc = QLabel(
+            "💡 Tip: Start with a preset, then customize if needed. "
+            "The 'Production Line' preset works well for most cases."
+        )
+        preset_desc.setWordWrap(True)
+        preset_desc.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
+        preset_layout.addWidget(preset_desc)
+
+        preset_group.setLayout(preset_layout)
+        main_layout.addWidget(preset_group)
+
+        # ===== Model Selection with Categories =====
+        model_group = QGroupBox("AI Model Selection")
+        model_layout = QVBoxLayout()
+
         self.modelCombo = QComboBox()
-        self.modelCombo.addItems([
-            "dino_deitsmall16", "ViT-B-32", "ViT-B-16", "ViT-L-14",
-            "dino_vitbase16", "dino_vitbase8",
-            "dinov2_vitb14", "dinov2_vitl14",
-            "google/siglip-so400m-patch14-384",
-            "vit_small_patch32_224.augreg_in21k",
-            "vit_tiny_patch16_224.augreg_in21k",
-            # "vit_base_patch16_224.dino",
-            "vit_small_patch16_224.dino",
-        ])
+        self.populate_model_dropdown()
 
-        current_backbone = config_data["models"].get("backbone_name", "dino_deitsmall16")
-        self.modelCombo.setCurrentText(current_backbone)
-        layout.addRow("Backbone Name:", self.modelCombo)
+        current_backbone = config_data["models"].get("backbone_name", "dinov2_vitb14")
+        # Find and select current model
+        for i in range(self.modelCombo.count()):
+            if self.modelCombo.itemData(i) == current_backbone:
+                self.modelCombo.setCurrentIndex(i)
+                break
 
-        # GPU device
-        self.deviceSpin = QSpinBox()
-        self.deviceSpin.setRange(0, 16)
-        self.deviceSpin.setValue(config_data.get("device", 0))
-        layout.addRow("GPU Device Index:", self.deviceSpin)
+        self.modelCombo.currentIndexChanged.connect(self.update_model_details)
+        model_layout.addWidget(self.modelCombo)
+
+        # Model details display
+        self.model_details_label = QLabel()
+        self.model_details_label.setWordWrap(True)
+        self.model_details_label.setStyleSheet(
+            "background-color: #f0f0f0; padding: 10px; border-radius: 5px; "
+            "font-family: monospace; font-size: 10pt;"
+        )
+        model_layout.addWidget(self.model_details_label)
+
+        model_group.setLayout(model_layout)
+        main_layout.addWidget(model_group)
+
+        # ===== GPU Device Selection with Auto-Detection =====
+        device_group = QGroupBox("Processing Device")
+        device_layout = QVBoxLayout()
+
+        self.deviceCombo = QComboBox()
+        self.populate_device_dropdown()
+
+        # Set current device
+        current_device = config_data.get("device", 0)
+        for i in range(self.deviceCombo.count()):
+            if self.deviceCombo.itemData(i) == current_device:
+                self.deviceCombo.setCurrentIndex(i)
+                break
+
+        device_layout.addWidget(self.deviceCombo)
+
+        # Device info label
+        device_info = get_recommended_device()
+        self.device_info_label = QLabel()
+        self.device_info_label.setWordWrap(True)
+        if 'warning' in device_info:
+            self.device_info_label.setText(f"⚠️ {device_info.get('warning', '')}")
+            self.device_info_label.setStyleSheet("color: #ff9800; padding: 5px;")
+        else:
+            self.device_info_label.setText(f"✓ {device_info.get('recommendation', '')}")
+            self.device_info_label.setStyleSheet("color: #4caf50; padding: 5px;")
+        device_layout.addWidget(self.device_info_label)
+
+        device_group.setLayout(device_layout)
+        main_layout.addWidget(device_group)
+
+        # ===== Other Settings =====
+        settings_group = QGroupBox("Advanced Settings")
+        settings_layout = QFormLayout()
 
         # Image Resize Selection using QComboBox
         self.imgResizeCombo = QComboBox()
         # Define possible image sizes based on model patch sizes.
         self.image_size_options = {
-                    "dino_deitsmall16": [224, 256, 512],  # Added 256, 512
-                    "ViT-B-32": [224, 384],             # Example: Added 384
-                    "ViT-B-16": [224, 256, 384],         # Example: Added 256, 384
-                    "ViT-L-14": [224, 384, 512],         # Example: Added 384, 512
-                    "dino_vitbase16": [224, 256, 512],   # Example: Added 256, 512
-                    "dino_vitbase8": [224, 256],        # Example: Added 256
-                    "dinov2_vitb14": [224, 384, 512],   # Example: Added 384, 512
-                    "dinov2_vitl14": [224, 512],        # Example: Added 512
-                    "google/siglip-so400m-patch14-384": [384, 392], # Added 384 (if different from 392 for some reason, or keep just 392)
-                    # Add other models and their common sizes
+                    "dino_deitsmall16": [224, 256, 512],
+                    "ViT-B-32": [224, 384],
+                    "ViT-B-16": [224, 256, 384],
+                    "ViT-L-14": [224, 384, 512],
+                    "dino_vitbase16": [224, 256, 512],
+                    "dino_vitbase8": [224, 256],
+                    "dinov2_vitb14": [224, 384, 512],
+                    "dinov2_vitl14": [224, 512],
+                    "google/siglip-so400m-patch14-384": [384, 392],
                     "vit_small_patch32_224.augreg_in21k": [224, 256],
                     "vit_tiny_patch16_224.augreg_in21k": [224, 256],
-                    # "vit_base_patch16_224.dino": [224, 256, 384],
                     "vit_small_patch16_224.dino": [224, 256],
                 }
-        self.modelCombo.currentTextChanged.connect(self.updateImageSizeOptions)
+        self.modelCombo.currentIndexChanged.connect(self.updateImageSizeOptions)
         # Initialize the dropdown based on the current model.
-        self.updateImageSizeOptions(current_backbone)
-        layout.addRow("Image Resize:", self.imgResizeCombo)
+        current_model_name = self.modelCombo.currentData()
+        if current_model_name:
+            self.updateImageSizeOptions(current_model_name)
+        self.imgResizeCombo.setToolTip(
+            "Image Processing Size:\n"
+            "• 224: Standard, fastest processing (RECOMMENDED)\n"
+            "• 384/512: Higher quality but slower\n"
+            "Larger images capture more detail but take longer to analyze"
+        )
+        settings_layout.addRow("Image Size:", self.imgResizeCombo)
 
+        # Detection Sensitivity (converted to 0-100% from 1.0-10.0)
         self.imageThresholdSpin = QDoubleSpinBox()
-        self.imageThresholdSpin.setRange(1.0, 10.0)
-        self.imageThresholdSpin.setSingleStep(0.1)
-        self.imageThresholdSpin.setValue(thresholds.get("image_threshold", 9.0))
-        layout.addRow("Image Threshold:", self.imageThresholdSpin)
-        self.overlayThresholdSpin = QDoubleSpinBox()
-        self.overlayThresholdSpin.setRange(1.0, 10.0)
-        self.overlayThresholdSpin.setSingleStep(0.1)
-        self.overlayThresholdSpin.setValue(thresholds.get("overlay_threshold", 3.5))
-        layout.addRow("Overlay Threshold:", self.overlayThresholdSpin)
+        self.imageThresholdSpin.setRange(0, 100)
+        self.imageThresholdSpin.setSingleStep(5)
+        # Convert from 1.0-10.0 scale to 0-100 percentage
+        old_value = thresholds.get("image_threshold", 9.0)
+        self.imageThresholdSpin.setValue(old_value * 10)
+        self.imageThresholdSpin.setSuffix("%")
+        self.imageThresholdSpin.setToolTip(
+            "Detection Sensitivity - How strict the defect detection should be:\n"
+            "• High (80-100%): Strict - only obvious defects trigger alerts\n"
+            "• Medium (60-80%): Balanced - good for most cases (RECOMMENDED)\n"
+            "• Low (0-60%): Sensitive - catches subtle issues but may have false alarms"
+        )
+        settings_layout.addRow("Detection Sensitivity:", self.imageThresholdSpin)
 
+        # Heatmap Visibility (converted to 0-100% from 1.0-10.0)
+        self.overlayThresholdSpin = QDoubleSpinBox()
+        self.overlayThresholdSpin.setRange(0, 100)
+        self.overlayThresholdSpin.setSingleStep(5)
+        # Convert from 1.0-10.0 scale to 0-100 percentage
+        old_overlay = thresholds.get("overlay_threshold", 3.5)
+        self.overlayThresholdSpin.setValue(old_overlay * 10)
+        self.overlayThresholdSpin.setSuffix("%")
+        self.overlayThresholdSpin.setToolTip(
+            "Heatmap Intensity - How much of the defect areas to highlight:\n"
+            "• High (80-100%): Only highlight most severe areas\n"
+            "• Medium (30-50%): Balanced highlighting (RECOMMENDED)\n"
+            "• Low (0-30%): Highlight all anomalous regions"
+        )
+        settings_layout.addRow("Heatmap Intensity:", self.overlayThresholdSpin)
+
+        settings_group.setLayout(settings_layout)
+        main_layout.addWidget(settings_group)
+
+        # Now that all widgets are created, update model details for initial selection
+        self.update_model_details()
+
+        # Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        self.setLayout(layout)
+        main_layout.addWidget(buttons)
+
+        self.setLayout(main_layout)
+
+    def populate_model_dropdown(self):
+        """Populate model dropdown with categorized models"""
+        from utils import get_models_by_category, get_model_info, get_category_display_name
+
+        self.modelCombo.clear()
+
+        # Add models by category
+        for category in ['fast', 'balanced', 'accurate']:
+            # Add category header (non-selectable)
+            self.modelCombo.addItem(f"──── {get_category_display_name(category)} ────", None)
+            model_index = self.modelCombo.count() - 1
+            self.modelCombo.model().item(model_index).setEnabled(False)
+
+            # Add models in this category
+            models = get_models_by_category(category)
+            for model_name in models:
+                info = get_model_info(model_name)
+                if info:
+                    display_text = f"   {info['display_name']}"
+                    self.modelCombo.addItem(display_text, model_name)
+
+    def populate_device_dropdown(self):
+        """Populate device dropdown with detected GPUs"""
+        from utils import get_gpu_info
+
+        self.deviceCombo.clear()
+
+        gpus = get_gpu_info()
+        if gpus:
+            for gpu in gpus:
+                label = f"GPU {gpu['index']}: {gpu['name']} ({gpu['memory_gb']:.0f}GB)"
+                if gpu['recommended']:
+                    label += " ✓ RECOMMENDED"
+                self.deviceCombo.addItem(label, gpu['index'])
+        else:
+            self.deviceCombo.addItem("⚠️ CPU Mode (Slow - No GPU detected)", "cpu")
+
+    def update_model_details(self):
+        """Update the model details display when selection changes"""
+        from utils import get_model_info, format_model_details, check_model_compatibility, get_recommended_device
+
+        model_name = self.modelCombo.currentData()
+        if not model_name:
+            self.model_details_label.setText("")
+            return
+
+        info = get_model_info(model_name)
+        if not info:
+            self.model_details_label.setText("No information available for this model.")
+            return
+
+        # Format basic details
+        details_text = format_model_details(model_name)
+
+        # Check compatibility with current hardware
+        device_info = get_recommended_device()
+        compat = check_model_compatibility(model_name, device_info)
+
+        if not compat.get('compatible', True):
+            details_text += f"\n\n⚠️ WARNING: {compat['warning']}"
+            details_text += f"\n💡 Try: {compat.get('recommendation', 'a smaller model')}"
+        elif 'warning' in compat:
+            details_text += f"\n\n⚠️ {compat['warning']}"
+
+        self.model_details_label.setText(details_text)
+
+        # Update image size options for this model
+        self.updateImageSizeOptions(model_name)
 
     def updateImageSizeOptions(self, model_name):
+        """Update available image sizes based on selected model"""
+        # Check if imgResizeCombo exists yet (may be called during initialization)
+        if not hasattr(self, 'imgResizeCombo'):
+            return
+
         # Clear previous options
         self.imgResizeCombo.clear()
-        sizes = self.image_size_options.get(model_name, [224])
+
+        # Get model info to find recommended sizes
+        from utils import get_model_info
+        info = get_model_info(model_name)
+
+        if info and 'recommended_image_sizes' in info:
+            sizes = info['recommended_image_sizes']
+        else:
+            # Fallback to predefined options
+            sizes = self.image_size_options.get(model_name, [224])
+
+        # Save current value if it exists
+        current_size = self.config_data.get("datasets", {}).get("img_resize", 224)
+
         # Populate the combo box with available sizes
         for size in sizes:
-            # Display as "224 x 224" (you can adjust the formatting if needed)
-            self.imgResizeCombo.addItem(f"{size}x{size}", size)
-        # Optionally, you could set the current index to the first element.
-        self.imgResizeCombo.setCurrentIndex(0)
+            self.imgResizeCombo.addItem(f"{size}×{size}", size)
+
+        # Try to restore previous selection
+        for i in range(self.imgResizeCombo.count()):
+            if self.imgResizeCombo.itemData(i) == current_size:
+                self.imgResizeCombo.setCurrentIndex(i)
+                break
+
+    def apply_preset(self):
+        """Apply a configuration preset"""
+        from utils import get_recommended_device
+
+        preset_name = self.preset_combo.currentData()
+        if not preset_name:
+            return  # Custom mode, no preset to apply
+
+        # Define presets
+        device_info = get_recommended_device()
+        device_value = device_info['device'] if device_info['device'] != 'cpu' else 0
+
+        presets = {
+            "testing": {
+                "model": "vit_tiny_patch16_224.augreg_in21k",
+                "img_size": 224,
+                "image_threshold": 85,
+                "overlay_threshold": 40,
+                "device": "cpu"  # CPU for testing
+            },
+            "production": {
+                "model": "dinov2_vitb14",
+                "img_size": 224,
+                "image_threshold": 90,
+                "overlay_threshold": 35,
+                "device": device_value  # Use detected GPU
+            },
+            "precision": {
+                "model": "dinov2_vitl14",
+                "img_size": 384,
+                "image_threshold": 95,
+                "overlay_threshold": 30,
+                "device": device_value
+            },
+            "cpu": {
+                "model": "dino_deitsmall16",
+                "img_size": 224,
+                "image_threshold": 85,
+                "overlay_threshold": 40,
+                "device": "cpu"
+            }
+        }
+
+        preset = presets.get(preset_name)
+        if not preset:
+            return
+
+        # Apply preset values
+        # Set model
+        for i in range(self.modelCombo.count()):
+            if self.modelCombo.itemData(i) == preset["model"]:
+                self.modelCombo.setCurrentIndex(i)
+                break
+
+        # Set image size (will be updated by model change, but set explicitly too)
+        for i in range(self.imgResizeCombo.count()):
+            if self.imgResizeCombo.itemData(i) == preset["img_size"]:
+                self.imgResizeCombo.setCurrentIndex(i)
+                break
+
+        # Set thresholds
+        self.imageThresholdSpin.setValue(preset["image_threshold"])
+        self.overlayThresholdSpin.setValue(preset["overlay_threshold"])
+
+        # Set device
+        if preset["device"] == "cpu":
+            # Find CPU option
+            for i in range(self.deviceCombo.count()):
+                if self.deviceCombo.itemData(i) == "cpu":
+                    self.deviceCombo.setCurrentIndex(i)
+                    break
+        else:
+            # Find GPU option
+            for i in range(self.deviceCombo.count()):
+                if self.deviceCombo.itemData(i) == preset["device"]:
+                    self.deviceCombo.setCurrentIndex(i)
+                    break
 
     def accept(self):
-        self.config_data["models"]["backbone_name"] = self.modelCombo.currentText()
-        self.config_data["device"] = self.deviceSpin.value()
+        # Get model name from itemData (not text which includes display formatting)
+        model_name = self.modelCombo.currentData()
+        if model_name:
+            self.config_data["models"]["backbone_name"] = model_name
+
+        # Get device from combo box
+        device_value = self.deviceCombo.currentData()
+        self.config_data["device"] = device_value
+
         # Save the selected image size (as an integer)
         self.config_data["datasets"]["img_resize"] = self.imgResizeCombo.currentData()
-        self.config_data["thresholds"]["image_threshold"] = self.imageThresholdSpin.value()
-        self.config_data["thresholds"]["overlay_threshold"] = self.overlayThresholdSpin.value()
+
+        # Convert percentages back to 1.0-10.0 scale for internal use
+        self.config_data["thresholds"]["image_threshold"] = self.imageThresholdSpin.value() / 10.0
+        self.config_data["thresholds"]["overlay_threshold"] = self.overlayThresholdSpin.value() / 10.0
+
         super().accept()
 
     def reject(self):
@@ -620,6 +916,9 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.cfgPath = cfgPath
         with open(cfgPath, "r") as f:
             self.config_data = yaml.safe_load(f)
+
+        # Add status bar with plain language status indicators (after config is loaded)
+        self.setup_status_bar()
         try:
             if torch.cuda.is_available():
                 dev_index = self.config_data.get('device', 0)
@@ -653,6 +952,82 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.connect_to_camera(0)
 
     # ------------------------------
+    # Status Bar Setup
+    # ------------------------------
+    def setup_status_bar(self):
+        """Add status bar with plain language indicators"""
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+
+        # Left: Current operation status
+        self.status_left = QLabel("Ready to start")
+        self.status_left.setStyleSheet("color: green; font-weight: bold;")
+
+        # Center: Model information
+        model_name = self.config_data.get("models", {}).get("backbone_name", "Unknown")
+        model_display = self._get_model_display_name(model_name)
+        self.status_center = QLabel(f"AI Model: {model_display}")
+
+        # Right: Camera/Device status
+        self.status_right = QLabel("Camera: Not connected")
+        self.status_right.setStyleSheet("color: orange;")
+
+        self.status_bar.addWidget(self.status_left, 1)
+        self.status_bar.addPermanentWidget(self.status_center)
+        self.status_bar.addPermanentWidget(self.status_right)
+
+    def _get_model_display_name(self, model_name):
+        """Convert technical model names to friendly descriptions"""
+        model_map = {
+            "dinov2_vitb14": "DINOv2 Base (Balanced)",
+            "dinov2_vitl14": "DINOv2 Large (High Accuracy)",
+            "dino_deitsmall16": "DeiT Small (Fast)",
+            "dino_vitbase16": "ViT Base (Balanced)",
+            "vit_tiny_patch16_224.augreg_in21k": "ViT Tiny (Fastest)",
+            "vit_small_patch16_224.dino": "ViT Small (Fast)",
+            "ViT-B-32": "ViT Base-32",
+            "ViT-B-16": "ViT Base-16",
+            "ViT-L-14": "ViT Large-14",
+            "google/siglip-so400m-patch14-384": "SigLIP (High Detail)"
+        }
+        return model_map.get(model_name, model_name)
+
+    def update_status(self, state, message=None):
+        """Update status bar with current operation state
+
+        States: ready, connecting, connected, collecting, analyzing, complete, error
+        """
+        status_config = {
+            "ready": {"text": "Ready to start", "color": "green"},
+            "connecting": {"text": "Connecting to camera...", "color": "orange"},
+            "connected": {"text": "Connected - Ready to analyze", "color": "green"},
+            "collecting": {"text": "Collecting frames from camera...", "color": "blue"},
+            "analyzing": {"text": "Analyzing for defects...", "color": "blue"},
+            "complete": {"text": "Analysis complete", "color": "green"},
+            "error": {"text": message or "Error occurred", "color": "red"}
+        }
+
+        config = status_config.get(state, {"text": message or state, "color": "black"})
+        self.status_left.setText(config["text"])
+        self.status_left.setStyleSheet(f"color: {config['color']}; font-weight: bold;")
+
+    def update_camera_status(self, source, connected=True):
+        """Update camera connection status"""
+        if connected:
+            if isinstance(source, int):
+                text = f"Camera: USB Device {source} connected"
+                color = "green"
+            else:
+                text = "Camera: IP Camera connected"
+                color = "green"
+        else:
+            text = "Camera: Not connected"
+            color = "orange"
+
+        self.status_right.setText(text)
+        self.status_right.setStyleSheet(f"color: {color}; font-weight: bold;")
+
+    # ------------------------------
     # Unified Sidebar Setup
     # ------------------------------
     def setup_sidebar(self):
@@ -665,16 +1040,31 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.anomaly_sidebar = QWidget(); an_layout = QVBoxLayout(self.anomaly_sidebar)
         # buttons (copied verbatim from original implementation) ----------
         an_btn_layout = QHBoxLayout()
-        self.anomaly_save_to_soft_btn = QPushButton("Save to Soft");  self.anomaly_save_to_soft_btn.clicked.connect(self.save_selected_anomaly_to_soft)
-        self.anomaly_save_btn        = QPushButton("Save Selected");  self.anomaly_save_btn.clicked.connect(self.save_selected_anomaly_images)
-        self.anomaly_delete_btn      = QPushButton("Delete Selected");self.anomaly_delete_btn.clicked.connect(self.delete_selected_anomaly_images)
-        self.anomaly_select_all_btn  = QPushButton("Select/Deselect All"); self.anomaly_select_all_btn.clicked.connect(self.toggle_select_all_anomaly)
+        self.anomaly_save_to_soft_btn = QPushButton("Save to Reference Library")
+        self.anomaly_save_to_soft_btn.setToolTip(
+            "Add selected images to Reference Library.\n"
+            "These images help the AI learn what's normal in your process."
+        )
+        self.anomaly_save_to_soft_btn.clicked.connect(self.save_selected_anomaly_to_soft)
+        self.anomaly_save_btn = QPushButton("Save Selected")
+        self.anomaly_save_btn.setToolTip("Save selected defect images to a folder on your computer")
+        self.anomaly_save_btn.clicked.connect(self.save_selected_anomaly_images)
+        self.anomaly_delete_btn = QPushButton("Delete Selected")
+        self.anomaly_delete_btn.setToolTip("Remove selected images from this list")
+        self.anomaly_delete_btn.clicked.connect(self.delete_selected_anomaly_images)
+        self.anomaly_select_all_btn = QPushButton("Select/Deselect All")
+        self.anomaly_select_all_btn.setToolTip("Toggle selection of all images in this list")
+        self.anomaly_select_all_btn.clicked.connect(self.toggle_select_all_anomaly)
         for b in (self.anomaly_save_to_soft_btn, self.anomaly_save_btn, self.anomaly_delete_btn, self.anomaly_select_all_btn):
             an_btn_layout.addWidget(b)
         an_layout.addLayout(an_btn_layout)
         # master Display Mask checkbox ------------------------------------
-        self.anomaly_display_mask_checkbox = QCheckBox("Display Mask")
+        self.anomaly_display_mask_checkbox = QCheckBox("Show Defect Highlights")
         self.anomaly_display_mask_checkbox.setChecked(True)
+        self.anomaly_display_mask_checkbox.setToolTip(
+            "Show/hide the colored overlay highlighting defect areas.\n"
+            "Red areas = detected defects or anomalies"
+        )
         self.anomaly_display_mask_checkbox.toggled.connect(self.on_anomaly_display_mask_toggled)
         an_layout.addWidget(self.anomaly_display_mask_checkbox)
 
@@ -687,36 +1077,62 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.anomaly_grid = QGridLayout(); an_container = QWidget(); an_container.setLayout(self.anomaly_grid)
         self.anomaly_scroll = self._make_scroll_area(an_container)
         an_layout.addWidget(self.anomaly_scroll)
-        self.sidebar_tab_widget.addTab(self.anomaly_sidebar, "Anomalous")
+        self.sidebar_tab_widget.addTab(self.anomaly_sidebar, "Detected Defects")
+        self.sidebar_tab_widget.setTabToolTip(0, "Images where defects or anomalies were detected")
 
         # ===================== Saved Images TAB ===========================
         self.saved_sidebar = QWidget(); sv_layout = QVBoxLayout(self.saved_sidebar)
         sv_btn_layout = QHBoxLayout()
-        self.saved_save_to_soft_btn = QPushButton("Save to Soft");  self.saved_save_to_soft_btn.clicked.connect(self.save_selected_to_soft_memory)
-        self.saved_save_btn        = QPushButton("Save Selected");  self.saved_save_btn.clicked.connect(self.save_selected_saved_images)
-        self.saved_delete_btn      = QPushButton("Delete Selected");self.saved_delete_btn.clicked.connect(self.delete_selected_saved_images)
-        self.saved_select_all_btn  = QPushButton("Select/Deselect All"); self.saved_select_all_btn.clicked.connect(self.toggle_select_all_saved)
+        self.saved_save_to_soft_btn = QPushButton("Save to Reference Library")
+        self.saved_save_to_soft_btn.setToolTip(
+            "Add selected images to Reference Library.\n"
+            "Use good/normal images to help improve detection accuracy."
+        )
+        self.saved_save_to_soft_btn.clicked.connect(self.save_selected_to_soft_memory)
+        self.saved_save_btn = QPushButton("Save Selected")
+        self.saved_save_btn.setToolTip("Save selected images to a folder on your computer")
+        self.saved_save_btn.clicked.connect(self.save_selected_saved_images)
+        self.saved_delete_btn = QPushButton("Delete Selected")
+        self.saved_delete_btn.setToolTip("Remove selected images from this list")
+        self.saved_delete_btn.clicked.connect(self.delete_selected_saved_images)
+        self.saved_select_all_btn = QPushButton("Select/Deselect All")
+        self.saved_select_all_btn.setToolTip("Toggle selection of all images in this list")
+        self.saved_select_all_btn.clicked.connect(self.toggle_select_all_saved)
         for b in (self.saved_save_to_soft_btn, self.saved_save_btn, self.saved_delete_btn, self.saved_select_all_btn):
             sv_btn_layout.addWidget(b)
         sv_layout.addLayout(sv_btn_layout)
         self.saved_grid = QGridLayout(); sv_container = QWidget(); sv_container.setLayout(self.saved_grid)
         self.saved_scroll = self._make_scroll_area(sv_container)
         sv_layout.addWidget(self.saved_scroll)
-        self.sidebar_tab_widget.addTab(self.saved_sidebar, "Saved")
+        self.sidebar_tab_widget.addTab(self.saved_sidebar, "Captured Images")
+        self.sidebar_tab_widget.setTabToolTip(1, "Images you manually captured using the Capture button")
 
         # ===================== Soft Memory TAB ===========================
         self.soft_memory_sidebar = QWidget(); sm_layout = QVBoxLayout(self.soft_memory_sidebar)
         sm_btn_layout = QHBoxLayout()
-        self.soft_delete_btn   = QPushButton("Delete Selected"); self.soft_delete_btn.clicked.connect(self.soft_delete_selected)
-        self.soft_clear_btn    = QPushButton("Clear All");      self.soft_clear_btn.clicked.connect(self.soft_clear_all)
-        self.soft_select_all_btn = QPushButton("Select/Deselect All"); self.soft_select_all_btn.clicked.connect(self.soft_toggle_select_all)
+        self.soft_delete_btn = QPushButton("Delete Selected")
+        self.soft_delete_btn.setToolTip("Remove selected images from the Reference Library")
+        self.soft_delete_btn.clicked.connect(self.soft_delete_selected)
+        self.soft_clear_btn = QPushButton("Clear All")
+        self.soft_clear_btn.setToolTip(
+            "Remove ALL images from Reference Library.\n"
+            "Warning: This will reset the AI's learned examples!"
+        )
+        self.soft_clear_btn.clicked.connect(self.soft_clear_all)
+        self.soft_select_all_btn = QPushButton("Select/Deselect All")
+        self.soft_select_all_btn.setToolTip("Toggle selection of all images in this list")
+        self.soft_select_all_btn.clicked.connect(self.soft_toggle_select_all)
         for b in (self.soft_delete_btn, self.soft_clear_btn, self.soft_select_all_btn):
             sm_btn_layout.addWidget(b)
         sm_layout.addLayout(sm_btn_layout)
         self.soft_grid = QGridLayout(); sm_container = QWidget(); sm_container.setLayout(self.soft_grid)
         self.soft_scroll = self._make_scroll_area(sm_container)
         sm_layout.addWidget(self.soft_scroll)
-        self.sidebar_tab_widget.addTab(self.soft_memory_sidebar, "Soft Memory")
+        self.sidebar_tab_widget.addTab(self.soft_memory_sidebar, "Reference Library")
+        self.sidebar_tab_widget.setTabToolTip(2,
+            "Known good images that help the AI learn what's normal.\n"
+            "Add examples of defect-free products to improve detection accuracy."
+        )
 
 
     @pyqtSlot(bool)
@@ -924,7 +1340,14 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.usb_device_spin = QSpinBox()
         self.usb_device_spin.setRange(0, 10)
         self.usb_device_spin.setValue(0)
+        self.usb_device_spin.setToolTip(
+            "USB Camera Device Number:\n"
+            "• 0: First/default camera (usually built-in webcam)\n"
+            "• 1, 2, etc.: Additional USB cameras\n"
+            "Try different numbers if your camera isn't detected"
+        )
         self.usb_connect_btn = QPushButton("Connect USB Camera")
+        self.usb_connect_btn.setToolTip("Connect to a USB camera using the device number above")
         self.usb_connect_btn.clicked.connect(self.connect_usb_camera)
         usb_layout.addWidget(usb_label)
         usb_layout.addWidget(self.usb_device_spin)
@@ -938,7 +1361,14 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.ip_camera_input = QLineEdit()
         self.ip_camera_input.setPlaceholderText("rtsp://username:password@ip:port/path or http://ip:port/video")
         self.ip_camera_input.setMinimumWidth(400)
+        self.ip_camera_input.setToolTip(
+            "Enter IP Camera URL in one of these formats:\n"
+            "• RTSP: rtsp://username:password@192.168.1.100:554/stream\n"
+            "• HTTP: http://192.168.1.100:80/video\n"
+            "Replace username, password, and IP address with your camera's details"
+        )
         self.ip_connect_btn = QPushButton("Connect IP Camera")
+        self.ip_connect_btn.setToolTip("Connect to an IP/network camera using the URL above")
         self.ip_connect_btn.clicked.connect(self.connect_ip_camera)
         ip_layout.addWidget(ip_label)
         ip_layout.addWidget(self.ip_camera_input)
@@ -965,8 +1395,15 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setMinimumSize(600, 600)
         layout.addWidget(self.video_label)
-        self.anomaly_label = QLabel("Anomaly Score: ---")
+        self.anomaly_label = QLabel("Defect Level: Not started")
         self.anomaly_label.setAlignment(Qt.AlignCenter)
+        self.anomaly_label.setToolTip(
+            "Defect Level indicates the severity of detected anomalies:\n"
+            "• 0.0 - 0.3: Normal (no defects detected)\n"
+            "• 0.3 - 0.7: Minor issues (small scratches, dirt)\n"
+            "• 0.7 - 0.9: Moderate defects (visible damage)\n"
+            "• 0.9 - 1.0: Major defects (significant problems)"
+        )
         layout.addWidget(self.anomaly_label)
         self.collection_progress_bar = QProgressBar()
         self.collection_progress_bar.setValue(0)
@@ -977,8 +1414,12 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.inference_progress_bar.setMaximum(100)
         layout.addWidget(QLabel("Inference Progress:"))
         layout.addWidget(self.inference_progress_bar)
-        self.inference_time_label = QLabel("Inference Time: ---")
+        self.inference_time_label = QLabel("Analysis Time: ---")
         self.inference_time_label.setAlignment(Qt.AlignCenter)
+        self.inference_time_label.setToolTip(
+            "Time taken to analyze the batch of images.\n"
+            "Faster times = better real-time performance."
+        )
         layout.addWidget(self.inference_time_label)
 
         controls_layout = QHBoxLayout()
@@ -988,6 +1429,12 @@ class MainWindow(QMainWindow, SidebarMixin):
         config_layout = QVBoxLayout()
         config_layout.setAlignment(Qt.AlignCenter)
         self.config_btn = QPushButton("Configuration")
+        self.config_btn.setToolTip(
+            "Open configuration settings to:\n"
+            "• Choose AI model (Fast, Balanced, or High Accuracy)\n"
+            "• Adjust detection sensitivity\n"
+            "• Change image processing settings"
+        )
         self.config_btn.clicked.connect(self.open_config_dialog)
         config_layout.addWidget(self.config_btn, alignment=Qt.AlignCenter)
         controls_layout.addLayout(config_layout)
@@ -1003,6 +1450,11 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.duration_spin.setDecimals(2)
         self.duration_spin.setSingleStep(0.1)
         self.duration_spin.setValue(3.0)
+        self.duration_spin.setToolTip(
+            "How many seconds of video to collect before analyzing.\n"
+            "Example: 3 seconds at 15 FPS = 45 frames per batch.\n"
+            "Longer duration = more context but slower results."
+        )
         duration_layout.addWidget(self.duration_spin, alignment=Qt.AlignCenter)
         controls_layout.addLayout(duration_layout)
 
@@ -1016,6 +1468,11 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.live_target_fps_spin.setDecimals(0)
         self.live_target_fps_spin.setSingleStep(1)
         self.live_target_fps_spin.setValue(15)
+        self.live_target_fps_spin.setToolTip(
+            "Target frame rate: How many frames per second to capture.\n"
+            "Higher FPS = smoother detection but more processing.\n"
+            "Recommended: 15 FPS for live inspection, 30 FPS for video playback."
+        )
         fps_layout.addWidget(self.live_target_fps_spin, alignment=Qt.AlignCenter)
         controls_layout.addLayout(fps_layout)
 
@@ -1024,17 +1481,34 @@ class MainWindow(QMainWindow, SidebarMixin):
         continuous_row = QHBoxLayout()
         continuous_label = QLabel("Continuous:")
         self.continuous_checkbox = QCheckBox()
+        self.continuous_checkbox.setToolTip(
+            "Continuous Mode: Keep analyzing new batches automatically.\n"
+            "Unchecked: Analyze once and stop.\n"
+            "Checked: Continuously monitor for defects in real-time."
+        )
         continuous_row.addWidget(continuous_label)
         continuous_row.addWidget(self.continuous_checkbox)
         actions_layout.addWidget(QLabel("Actions:"))
         actions_layout.addLayout(continuous_row)
         self.start_btn = QPushButton("Start")
+        self.start_btn.setToolTip(
+            "Start collecting frames from your camera.\n"
+            "Frames will be analyzed in batches to detect defects or anomalies."
+        )
         self.start_btn.clicked.connect(self.startRecording)
         actions_layout.addWidget(self.start_btn)
         self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setToolTip(
+            "Stop collecting and analyzing frames.\n"
+            "Any frames currently being analyzed will complete."
+        )
         self.stop_btn.clicked.connect(self.stopRecording)
         actions_layout.addWidget(self.stop_btn)
         self.capture_btn = QPushButton("Capture")
+        self.capture_btn.setToolTip(
+            "Capture a single frame from the camera and save it.\n"
+            "Use this to collect sample images for reference."
+        )
         self.capture_btn.clicked.connect(self.capture_still)
         actions_layout.addWidget(self.capture_btn)
         controls_layout.addLayout(actions_layout)
@@ -1047,14 +1521,17 @@ class MainWindow(QMainWindow, SidebarMixin):
         # Top row: Browse buttons and new Start Folder Inference button
         top_layout = QHBoxLayout()
         self.browse_video_btn = QPushButton("Browse Video")
+        self.browse_video_btn.setToolTip("Select a video file (.mp4, .avi, .mov) to analyze")
         self.browse_video_btn.clicked.connect(self.on_browse_video)
         top_layout.addWidget(self.browse_video_btn)
         # New: Browse Folder Button for images
         self.browse_folder_btn = QPushButton("Browse Folder")
+        self.browse_folder_btn.setToolTip("Select a folder containing images (.png, .jpg, .bmp) to analyze")
         self.browse_folder_btn.clicked.connect(self.on_browse_folder)
         top_layout.addWidget(self.browse_folder_btn)
         # New: Start Folder Inference Button
-        self.folder_inference_btn = QPushButton("Start Folder Inference")
+        self.folder_inference_btn = QPushButton("Analyze Folder Images")
+        self.folder_inference_btn.setToolTip("Analyze all images in the loaded folder for defects")
         self.folder_inference_btn.clicked.connect(self.runFolderInference)
         top_layout.addWidget(self.folder_inference_btn)
         layout.addLayout(top_layout)
@@ -1065,8 +1542,15 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.video_display_label.setMinimumSize(600, 600)
         layout.addWidget(self.video_display_label)
         # Anomaly score label
-        self.video_anomaly_label = QLabel("Anomaly Score: ---")
+        self.video_anomaly_label = QLabel("Defect Level: ---")
         self.video_anomaly_label.setAlignment(Qt.AlignCenter)
+        self.video_anomaly_label.setToolTip(
+            "Defect Level indicates severity:\n"
+            "• 0-30%: Normal (no defects)\n"
+            "• 30-70%: Minor issues\n"
+            "• 70-90%: Moderate defects\n"
+            "• 90-100%: Major defects"
+        )
         layout.addWidget(self.video_anomaly_label)
         # Progress bars and inference time for video
         self.video_collection_progress_bar = QProgressBar()
@@ -1078,8 +1562,9 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.video_inference_progress_bar.setMaximum(100)
         layout.addWidget(QLabel("Inference Progress:"))
         layout.addWidget(self.video_inference_progress_bar)
-        self.video_inference_time_label = QLabel("Inference Time: ---")
+        self.video_inference_time_label = QLabel("Analysis Time: ---")
         self.video_inference_time_label.setAlignment(Qt.AlignCenter)
+        self.video_inference_time_label.setToolTip("Time taken to analyze the video or images")
         layout.addWidget(self.video_inference_time_label)
         # Controls: Configuration, Duration, and Target FPS
         controls_layout = QHBoxLayout()
@@ -1098,6 +1583,10 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.video_duration_spin.setDecimals(2)
         self.video_duration_spin.setSingleStep(0.1)
         self.video_duration_spin.setValue(3.0)
+        self.video_duration_spin.setToolTip(
+            "Duration of video to analyze in one batch.\n"
+            "Example: 3 seconds at 30 FPS = 90 frames analyzed together"
+        )
         duration_layout.addWidget(self.video_duration_spin, alignment=Qt.AlignCenter)
         controls_layout.addLayout(duration_layout)
         target_fps_layout = QVBoxLayout()
@@ -1109,26 +1598,39 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.video_target_fps_spin.setDecimals(0)
         self.video_target_fps_spin.setSingleStep(1)
         self.video_target_fps_spin.setValue(30)
+        self.video_target_fps_spin.setToolTip(
+            "How many frames per second to extract from the video.\n"
+            "Higher = more detail but slower processing"
+        )
         target_fps_layout.addWidget(self.video_target_fps_spin, alignment=Qt.AlignCenter)
         controls_layout.addLayout(target_fps_layout)
         # Playback and Recording Controls
         actions_layout = QVBoxLayout()
         self.video_play_btn = QPushButton("Play")
+        self.video_play_btn.setToolTip("Play the loaded video")
         self.video_play_btn.clicked.connect(self.on_video_play)
         actions_layout.addWidget(self.video_play_btn)
         self.video_pause_btn = QPushButton("Pause")
+        self.video_pause_btn.setToolTip("Pause video playback")
         self.video_pause_btn.clicked.connect(self.on_video_pause)
         actions_layout.addWidget(self.video_pause_btn)
         continuous_layout = QHBoxLayout()
         continuous_label = QLabel("Continuous:")
         self.video_continuous_checkbox = QCheckBox()
+        self.video_continuous_checkbox.setToolTip(
+            "Continuously analyze the video in batches.\n"
+            "Unchecked: Analyze once and stop.\n"
+            "Checked: Keep analyzing as video plays."
+        )
         continuous_layout.addWidget(continuous_label)
         continuous_layout.addWidget(self.video_continuous_checkbox)
         actions_layout.addLayout(continuous_layout)
-        self.video_start_recording_btn = QPushButton("Start Recording")
+        self.video_start_recording_btn = QPushButton("Start Analysis")
+        self.video_start_recording_btn.setToolTip("Start analyzing the video for defects")
         self.video_start_recording_btn.clicked.connect(self.on_video_start_recording)
         actions_layout.addWidget(self.video_start_recording_btn)
-        self.video_stop_recording_btn = QPushButton("Stop Recording")
+        self.video_stop_recording_btn = QPushButton("Stop Analysis")
+        self.video_stop_recording_btn.setToolTip("Stop analyzing the video")
         self.video_stop_recording_btn.clicked.connect(self.on_video_stop_recording)
         actions_layout.addWidget(self.video_stop_recording_btn)
         controls_layout.addLayout(actions_layout)
@@ -1347,9 +1849,9 @@ class MainWindow(QMainWindow, SidebarMixin):
         per_image_time = elapsed_seconds / num_frames if num_frames > 0 else 0.0
         per_image_time_ms = per_image_time * 1000  # convert seconds to milliseconds
 
-        # Update label with both total and per-image inference time.
+        # Update label with both total and per-image analysis time.
         self.video_inference_time_label.setText(
-            f"Total Inference Time: {elapsed_seconds:.2f} s | Time per Image: {per_image_time_ms:.2f} ms"
+            f"Total Analysis Time: {elapsed_seconds:.2f} s | Time per Image: {per_image_time_ms:.2f} ms"
         )
 
         thresholds = self.config_data.get("thresholds", {})
@@ -1358,15 +1860,20 @@ class MainWindow(QMainWindow, SidebarMixin):
 
         if anomaly_maps.ndim == 4 and anomaly_maps.shape[1] == 1:
             anomaly_maps = anomaly_maps.squeeze(1)
-            
+
         anomaly_scores = anomaly_maps.reshape(anomaly_maps.shape[0], -1).max(axis=1)
         min_score = anomaly_scores.min()
         avg_score = anomaly_scores.mean()
         self.anomaly_scores_history.append(avg_score)
         rolling_avg = np.mean(self.anomaly_scores_history)
 
+        # Convert to percentages
+        min_percent = min_score * 100
+        avg_percent = rolling_avg * 100
+        max_percent = max_score * 100
+
         self.video_anomaly_label.setText(
-            f"Anomaly Score Min: {min_score:.4f}  Avg: {rolling_avg:.4f}  Max: {max_score:.4f}"
+            f"Defect Level - Min: {min_percent:.1f}%  Avg: {avg_percent:.1f}%  Max: {max_percent:.1f}%"
         )
 
         high_anomaly_indices = np.where(anomaly_scores > frame_threshold)[0]
@@ -1459,21 +1966,37 @@ class MainWindow(QMainWindow, SidebarMixin):
                     self.config_data['device'] = dev_index
                 else:
                     self.config_data['device'] = 'cpu'
+
+                # Update status to show we're loading model
+                self.update_status("analyzing", "Loading AI model...")
+
                 self.model = MuSc(self.config_data)
+
+                # Update status bar with new model name
+                model_name = self.config_data.get("models", {}).get("backbone_name", "Unknown")
+                model_display = self._get_model_display_name(model_name)
+                self.status_center.setText(f"AI Model: {model_display}")
+
+                self.update_status("ready")
             except Exception as e:
                 print("Error re-initializing model:", e)
+                self.update_status("error", f"Failed to load model: {str(e)}")
 
     def startRecording(self):
         if self.cap is None:
             QMessageBox.warning(self, "Camera Error", "No camera connected. Please connect to a camera first.")
+            self.update_status("error", "No camera connected")
             return
         if not self.cap.isOpened():
             QMessageBox.warning(self, "Camera Error", "Camera is not opened. Please reconnect to your camera.")
+            self.update_status("error", "Camera not opened")
             return
         if self.model is None:
             print("No model loaded; cannot start inference.")
+            self.update_status("error", "AI model not loaded")
             return
         self.recording = True
+        self.update_status("collecting")
         # Determine the camera FPS; if unavailable, default to 30.
         camera_fps = self.cap.get(cv2.CAP_PROP_FPS)
         if camera_fps <= 0:
@@ -1493,10 +2016,14 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.recording = False
         self.frame_queue = []
         self.inference_in_progress = False
+        self.update_status("ready")
         print("Recording / inference stopped.")
 
     def connect_to_camera(self, source):
         """Connect to a camera source (USB device index or IP camera URL)."""
+        # Update status to show we're trying to connect
+        self.update_status("connecting")
+
         # Release existing camera if any
         if self.cap is not None:
             self.cap.release()
@@ -1519,6 +2046,10 @@ class MainWindow(QMainWindow, SidebarMixin):
                         self.connection_status_label.setText(f"Status: Connected to IP Camera")
                         self.connection_status_label.setStyleSheet("color: green; font-weight: bold;")
                     print(f"Successfully connected to camera: {source}")
+
+                    # Update status bar
+                    self.update_status("connected")
+                    self.update_camera_status(source, connected=True)
                     return True
                 else:
                     raise Exception("Could not read frame from camera")
@@ -1531,6 +2062,11 @@ class MainWindow(QMainWindow, SidebarMixin):
             self.camera_source = None
             self.connection_status_label.setText(f"Status: Connection Failed")
             self.connection_status_label.setStyleSheet("color: red; font-weight: bold;")
+
+            # Update status bar to show error
+            self.update_status("error", "Camera connection failed")
+            self.update_camera_status(None, connected=False)
+
             QMessageBox.warning(self, "Camera Connection Error",
                               f"Failed to connect to camera:\n{str(e)}\n\nPlease check your camera source and try again.")
             print(f"Failed to connect to camera {source}: {e}")
@@ -1589,6 +2125,7 @@ class MainWindow(QMainWindow, SidebarMixin):
         if not frames_for_inference or self.model is None:
             return
         self.inference_in_progress = True
+        self.update_status("analyzing")
         self.inference_progress_bar.setValue(0)
         self.inference_thread = InferenceThread(self.model, frames_for_inference)
         self.inference_thread.progressChanged.connect(self.updateInferenceProgress)
@@ -1624,13 +2161,18 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.anomaly_scores_history.append(avg_score)
         rolling_avg = np.mean(self.anomaly_scores_history)
 
+        # Convert scores to percentages for better understanding
+        max_percent = max_score * 100
+        min_percent = min_score * 100
+        avg_percent = rolling_avg * 100
+
         self.anomaly_label.setText(
-            f"Anomaly Score (Max): {max_score:.4f}  (Min): {min_score:.4f}  (Avg): {rolling_avg:.4f}"
+            f"Defect Level - Max: {max_percent:.1f}%  Min: {min_percent:.1f}%  Avg: {avg_percent:.1f}%"
         )
 
-        # Update inference time label with both total and per-image times.
+        # Update analysis time label with both total and per-image times.
         self.inference_time_label.setText(
-            f"Total Inference Time: {elapsed_seconds:.2f} s | Time per Image: {per_image_time_ms:.2f} ms"
+            f"Total Analysis Time: {elapsed_seconds:.2f} s | Time per Image: {per_image_time_ms:.2f} ms"
         )
 
         high_anomaly_indices = np.where(anomaly_scores > frame_threshold)[0]
@@ -1670,6 +2212,9 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.refresh_anomaly_sidebar()
         if not self.continuous_checkbox.isChecked():
             self.recording = False
+            self.update_status("complete")
+        else:
+            self.update_status("collecting")  # Back to collecting for next batch
 
     def closeEvent(self, event):
         """Clean up resources when closing the window."""
