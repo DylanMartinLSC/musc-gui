@@ -64,3 +64,11 @@ output/
 # Configuration (keep config.yaml but ignore user-specific configs)
 # Uncomment the line below if you want to ignore user configs
 # config.yaml
+
+# Portable build outputs
+build/
+dist/
+release/
+*.spec
+*.egg-info/
+.demo-recording/
