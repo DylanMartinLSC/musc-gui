@@ -878,7 +878,7 @@ class SidebarMixin:
 # Main Window with Unified Sidebar and Load Video Tab
 ###########################################################
 class MainWindow(QMainWindow, SidebarMixin):
-    def __init__(self, cfgPath, parent=None, smoke_test=False):
+    def __init__(self, cfgPath, parent=None, smoke_test=False, auto_connect_camera=True):
         from collections import deque
 
         super().__init__(parent)
@@ -957,7 +957,7 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.live_frame_interval = 1  # Will be computed when starting recording
 
         # Initialize with USB camera by default
-        if not smoke_test:
+        if not smoke_test and auto_connect_camera:
             self.connect_to_camera(0)
 
     # ------------------------------
@@ -2263,7 +2263,7 @@ def main():
     font = QFont()
     font.setPointSize(16)
     app.setFont(font)
-    win = MainWindow(str(config), smoke_test=smoke)
+    win = MainWindow(str(config), smoke_test=smoke, auto_connect_camera="--no-camera" not in sys.argv)
     win.show()
     if smoke:
         QTimer.singleShot(750, app.quit)

@@ -2,14 +2,15 @@
 
 Inspect camera, video and image-folder samples with zero-shot defect heatmaps.
 
-<!-- TODO: Record the real app using media/GIF_SHOTLIST.md and drop the file at media/demo.gif. -->
 ![MuSc Industrial GUI demo](media/demo.gif)
+
+<sub>Actual CUDA source run; selected frames, not portable CPU performance. [Recording details](media/DEMO.md).</sub>
 
 [![Download for Windows](https://img.shields.io/badge/Download_for_Windows-download-238636)](https://github.com/DylanMartinLSC/musc-gui/releases/latest/download/musc-gui-windows.zip)
 
 Windows builds are unsigned: if SmartScreen appears, choose **More info → Run anyway**.
 
-The portable build uses CPU PyTorch (slower inference); model weights download on first use. Extract the whole ZIP and keep its files together.
+The portable build uses CPU PyTorch (slower inference); model weights download on first use. Extract the whole ZIP and keep its files together. Use `MuScGUI.exe --no-camera` for image-folder use without automatically connecting a webcam.
 
 
 A powerful, zero-shot anomaly detection system for industrial and manufacturing quality control. Detect defects, anomalies, and irregularities in real-time without training on defect examples.
