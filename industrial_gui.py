@@ -878,7 +878,7 @@ class SidebarMixin:
 # Main Window with Unified Sidebar and Load Video Tab
 ###########################################################
 class MainWindow(QMainWindow, SidebarMixin):
-    def __init__(self, cfgPath, parent=None):
+    def __init__(self, cfgPath, parent=None, smoke_test=False, auto_connect_camera=True):
         from collections import deque
 
         super().__init__(parent)
@@ -925,8 +925,16 @@ class MainWindow(QMainWindow, SidebarMixin):
                 self.config_data['device'] = dev_index
             else:
                 self.config_data['device'] = 'cpu'
-            self.model = MuSc(self.config_data)
+            if smoke_test:
+                # Import the real backend, but CI has neither a camera nor model weights.
+                if MuSc is None:
+                    raise ImportError('MuSc backend did not import')
+                self.model = None
+            else:
+                self.model = MuSc(self.config_data)
         except Exception as e:
+            if smoke_test:
+                raise
             print("Error creating model:", e)
             self.model = None
 
@@ -949,7 +957,8 @@ class MainWindow(QMainWindow, SidebarMixin):
         self.live_frame_interval = 1  # Will be computed when starting recording
 
         # Initialize with USB camera by default
-        self.connect_to_camera(0)
+        if not smoke_test and auto_connect_camera:
+            self.connect_to_camera(0)
 
     # ------------------------------
     # Status Bar Setup
@@ -2235,13 +2244,29 @@ class MainWindow(QMainWindow, SidebarMixin):
         event.accept()
 
 def main():
+    from pathlib import Path
+    import shutil
+    from multiprocessing import freeze_support
+    freeze_support()
+    smoke = '--smoke-test' in sys.argv
+    root = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
+    if getattr(sys, 'frozen', False):
+        home = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'MuScGUI'
+        home.mkdir(parents=True, exist_ok=True)
+        config = home / 'config.yaml'
+        if not config.exists():
+            shutil.copy2(root / 'config.yaml', config)
+        os.chdir(home)
+    else:
+        config = root / 'config.yaml'
     app = QApplication(sys.argv)
     font = QFont()
     font.setPointSize(16)
     app.setFont(font)
-    yaml_path = os.path.join(os.getcwd(), r"C:\Users\dylan\MuSc_original\MuSc\configs\musc.yaml")
-    win = MainWindow(yaml_path)
+    win = MainWindow(str(config), smoke_test=smoke, auto_connect_camera="--no-camera" not in sys.argv)
     win.show()
+    if smoke:
+        QTimer.singleShot(750, app.quit)
     sys.exit(app.exec_())
 
 if __name__ == "__main__":

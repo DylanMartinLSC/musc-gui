@@ -293,7 +293,8 @@ class MuSc():
                 # (Optional) Overlay the anomaly_map on top of the frame, etc.
                 # e.g. alpha-blend or just display it
 
-                cv2.waitKey(1)
+                # The Qt UI displays results on the main thread. Pumping an
+                # OpenCV event loop here can block this inference worker.
 
         # Optionally, simply clip the output without dividing by the batch maximum
         pr_px = pr_px.astype(np.float32)
